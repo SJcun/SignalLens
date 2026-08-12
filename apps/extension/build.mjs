@@ -5,6 +5,7 @@
 import { build } from 'esbuild'
 
 const apiBaseUrl = process.env.SIGNALLENS_EXTENSION_API_BASE_URL || 'http://localhost:8000/api/v1'
+const webBaseUrl = process.env.SIGNALLENS_EXTENSION_WEB_BASE_URL || 'http://localhost:5173'
 const common = {
   bundle: true,
   format: 'iife',
@@ -14,6 +15,7 @@ const common = {
   logLevel: 'info',
   define: {
     __SIGNALLENS_API_BASE_URL__: JSON.stringify(apiBaseUrl),
+    __SIGNALLENS_WEB_BASE_URL__: JSON.stringify(webBaseUrl),
   },
 }
 
@@ -30,5 +32,4 @@ await Promise.all([
   }),
 ])
 
-console.log(`构建完成，Capture API：${apiBaseUrl}`)
-
+console.log(`构建完成，Capture API：${apiBaseUrl}，Web：${webBaseUrl}`)

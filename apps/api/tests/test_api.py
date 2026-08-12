@@ -35,7 +35,7 @@ def capture_payload() -> dict:
 
 
 def test_health_and_idempotent_capture() -> None:
-    """健康检查可用，重复 capture_id 返回同一任务。"""
+    """健康检查、幂等采集、内容列表和详情均可用。"""
 
     with TestClient(app) as client:
         assert client.get("/api/v1/health").json()["status"] == "ok"
@@ -44,6 +44,16 @@ def test_health_and_idempotent_capture() -> None:
         assert first.status_code == 202
         assert second.status_code == 202
         assert first.json()["analysis_id"] == second.json()["analysis_id"]
+
+        contents = client.get("/api/v1/contents")
+        assert contents.status_code == 200
+        assert len(contents.json()) == 1
+        assert contents.json()[0]["title"] == "测试文章"
+        assert contents.json()[0]["analysis_status"] == "pending"
+
+        detail = client.get(f"/api/v1/contents/{first.json()['content_id']}")
+        assert detail.status_code == 200
+        assert detail.json()["markdown"] == "# 测试\n\n正文内容。"
 
 
 def teardown_module() -> None:

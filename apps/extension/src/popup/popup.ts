@@ -1,4 +1,5 @@
 import { buildCapture } from '../shared/capture'
+import { WEB_BASE_URL } from '../shared/config'
 import { buildExportJson, type QualityLevel } from '../shared/export'
 
 interface PopupResult {
@@ -192,7 +193,7 @@ async function submitAnalysis(): Promise<void> {
   }
   el.status.classList.add('hidden')
   el.analysisResult.classList.remove('hidden')
-  el.analysisDetail.href = `https://lens.example.com/contents/${response.contentId}`
+  el.analysisDetail.href = `${WEB_BASE_URL}/contents/${response.contentId}`
 }
 
 /** 下载当前 Markdown 正文。 */
@@ -260,4 +261,3 @@ el.selection.addEventListener('click', () => void convert('selection'))
 el.manual.addEventListener('click', () => void convert('manual'))
 
 void convert()
-

@@ -3,10 +3,51 @@ export interface HealthResponse {
   service: 'signallens-api'
 }
 
+export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+export interface ContentSummary {
+  id: string
+  title: string
+  author: string | null
+  source_url: string
+  source_type: string
+  capture_quality: string
+  created_at: string
+  analysis_id: string
+  analysis_status: AnalysisStatus
+  one_sentence_summary: string | null
+  recommendation: string | null
+  discovery_type: string | null
+}
+
+export interface ContentDetail extends ContentSummary {
+  markdown: string
+  triage: Record<string, unknown> | null
+  content_analysis: Record<string, unknown> | null
+  personal_evaluation: Record<string, unknown> | null
+}
+
+/** 统一处理非成功响应，保留后端给出的可读错误。 */
+async function apiResponse<T>(response: Response): Promise<T> {
+  if (response.ok) return response.json() as Promise<T>
+  const body = await response.json().catch(() => null) as { detail?: string } | null
+  throw new Error(body?.detail || `API 请求失败（${response.status}）`)
+}
+
 /** 请求后端健康状态，确认 Web 与新服务之间的连接。 */
 export async function getHealth(): Promise<HealthResponse> {
   const response = await fetch('/api/v1/health')
-  if (!response.ok) throw new Error(`API 请求失败（${response.status}）`)
-  return response.json() as Promise<HealthResponse>
+  return apiResponse<HealthResponse>(response)
 }
 
+/** 获取最近采集的内容及最新分析状态。 */
+export async function getContents(): Promise<ContentSummary[]> {
+  const response = await fetch('/api/v1/contents')
+  return apiResponse<ContentSummary[]>(response)
+}
+
+/** 获取单篇内容的原始 Markdown 与完整分析结果。 */
+export async function getContent(contentId: string): Promise<ContentDetail> {
+  const response = await fetch(`/api/v1/contents/${encodeURIComponent(contentId)}`)
+  return apiResponse<ContentDetail>(response)
+}

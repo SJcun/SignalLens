@@ -11,7 +11,14 @@ from sqlalchemy.orm import Session
 
 from .database import create_schema, get_session
 from .models import Analysis, AnalysisJob, Content
-from .schemas import AnalysisResponse, CaptureAccepted, CaptureRequest, HealthResponse
+from .schemas import (
+    AnalysisResponse,
+    CaptureAccepted,
+    CaptureRequest,
+    ContentDetailResponse,
+    ContentSummaryResponse,
+    HealthResponse,
+)
 from .settings import get_settings
 
 
@@ -102,6 +109,80 @@ def get_analysis(
         personal_evaluation=analysis.personal_evaluation_json,
         created_at=analysis.created_at,
         completed_at=analysis.completed_at,
+    )
+
+
+@app.get("/api/v1/contents", response_model=list[ContentSummaryResponse])
+def list_contents(
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = 50,
+) -> list[ContentSummaryResponse]:
+    """按采集时间倒序返回内容及其最新一次分析状态。"""
+
+    safe_limit = max(1, min(limit, 200))
+    latest_analysis_id = (
+        select(Analysis.id)
+        .where(Analysis.content_id == Content.id)
+        .order_by(Analysis.created_at.desc())
+        .limit(1)
+        .correlate(Content)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(Content, Analysis)
+        .join(Analysis, Analysis.id == latest_analysis_id)
+        .order_by(Content.created_at.desc())
+        .limit(safe_limit)
+    ).all()
+    return [_content_summary(content, analysis) for content, analysis in rows]
+
+
+@app.get("/api/v1/contents/{content_id}", response_model=ContentDetailResponse)
+def get_content(
+    content_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> ContentDetailResponse:
+    """返回原始 Markdown 和最新分析，供内容详情页展示。"""
+
+    content = session.get(Content, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="内容不存在")
+    analysis = session.scalar(
+        select(Analysis)
+        .where(Analysis.content_id == content.id)
+        .order_by(Analysis.created_at.desc())
+    )
+    if analysis is None:
+        raise HTTPException(status_code=409, detail="内容存在，但分析任务缺失")
+    summary = _content_summary(content, analysis)
+    return ContentDetailResponse(
+        **summary.model_dump(),
+        markdown=content.markdown,
+        triage=analysis.triage_json,
+        content_analysis=analysis.content_analysis_json,
+        personal_evaluation=analysis.personal_evaluation_json,
+    )
+
+
+def _content_summary(content: Content, analysis: Analysis) -> ContentSummaryResponse:
+    """从持久化 JSON 中安全提取 Inbox 所需的少量展示字段。"""
+
+    content_analysis = analysis.content_analysis_json or {}
+    personal_evaluation = analysis.personal_evaluation_json or {}
+    triage = analysis.triage_json or {}
+    return ContentSummaryResponse(
+        id=content.id,
+        title=content.title,
+        author=content.author,
+        source_url=content.source_url,
+        source_type=content.source_type,
+        capture_quality=content.capture_quality,
+        created_at=content.created_at,
+        analysis_id=analysis.id,
+        analysis_status=analysis.status,
+        one_sentence_summary=content_analysis.get("one_sentence_summary"),
+        recommendation=personal_evaluation.get("recommendation"),
+        discovery_type=personal_evaluation.get("discovery_type") or triage.get("discovery_type"),
     )
 
 

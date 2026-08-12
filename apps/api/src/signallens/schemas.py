@@ -73,9 +73,34 @@ class AnalysisResponse(BaseModel):
     completed_at: datetime | None
 
 
+class ContentSummaryResponse(BaseModel):
+    """Inbox 使用的内容摘要与最新分析状态。"""
+
+    id: str
+    title: str
+    author: str | None
+    source_url: str
+    source_type: str
+    capture_quality: str
+    created_at: datetime
+    analysis_id: str
+    analysis_status: Literal["pending", "running", "completed", "failed"]
+    one_sentence_summary: str | None
+    recommendation: str | None
+    discovery_type: str | None
+
+
+class ContentDetailResponse(ContentSummaryResponse):
+    """内容详情页需要的原文快照与完整分析结果。"""
+
+    markdown: str
+    triage: dict | None
+    content_analysis: dict | None
+    personal_evaluation: dict | None
+
+
 class HealthResponse(BaseModel):
     """部署探针使用的健康状态。"""
 
     status: Literal["ok"]
     service: Literal["signallens-api"]
-
