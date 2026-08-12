@@ -1,7 +1,8 @@
 services:
   api:
     build: ./apps/api
-    command: signallens-api
+    # 容器间需要通过 Compose 网络访问 API；宿主机仍不映射该端口。
+    command: uvicorn signallens.main:app --host 0.0.0.0 --port 8000
     environment:
       SIGNALLENS_DATABASE_URL: sqlite:////data/signallens.db
       SIGNALLENS_WEB_ORIGIN: https://lens.example.com
