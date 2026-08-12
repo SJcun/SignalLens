@@ -16,7 +16,7 @@ from .analysis.prompts import PROMPT_VERSION
 from .analysis.provider import OpenAICompatibleProvider
 from .analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
 from .database import SessionLocal, create_schema
-from .models import Analysis, AnalysisJob, Content, utc_now
+from .models import Analysis, AnalysisJob, Content, UserProfileRecord, utc_now
 from .settings import get_settings
 
 LOGGER = logging.getLogger("signallens.worker")
@@ -45,7 +45,7 @@ def process_next_job(
         return False
 
     analysis_id, content = claimed
-    user_profile = profile or UserProfile()
+    user_profile = profile or _load_user_profile()
     try:
         triage = run_triage(provider, content, user_profile)
         _save_triage(analysis_id, triage)
@@ -106,6 +106,28 @@ def _claim_next_job(model: str) -> tuple[str, AnalysisInput] | None:
             capture_mode=content.capture_mode,
             capture_quality=content.capture_quality,
             markdown=content.markdown,
+        )
+
+
+def _load_user_profile() -> UserProfile:
+    """将用户显式问卷转换为模型输入；没有问卷时保持保守空画像。"""
+
+    with SessionLocal() as session:
+        record = session.get(UserProfileRecord, "default")
+        if record is None or record.questionnaire_completed_at is None:
+            return UserProfile()
+        known_topics = [
+            f"{item['topic']}（{item['level']}）"
+            for item in record.known_topics_json
+            if item.get("topic") and item.get("level")
+        ]
+        return UserProfile(
+            focus_topics=record.focus_topics_json,
+            known_topics=known_topics,
+            reading_goals=record.reading_goals_json,
+            preferred_depth=record.preferred_depth,
+            time_budget_minutes=record.time_budget_minutes,
+            exploration_level=record.exploration_level,
         )
 
 

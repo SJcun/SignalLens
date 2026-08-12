@@ -47,6 +47,57 @@ export interface PersonalEvaluationResult {
   reading_plan: ReadingPlanItem[]
 }
 
+export interface KnownTopic {
+  topic: string
+  level: 'basic' | 'intermediate' | 'advanced'
+}
+
+export interface UserProfile {
+  focus_topics: string[]
+  known_topics: KnownTopic[]
+  reading_goals: string[]
+  preferred_depth: 'quick' | 'balanced' | 'deep'
+  time_budget_minutes: number
+  exploration_level: 'low' | 'medium' | 'high'
+  evaluation_mode: boolean
+  questionnaire_completed: boolean
+  updated_at: string
+}
+
+export type ProfileUpdate = Omit<UserProfile, 'questionnaire_completed' | 'updated_at'>
+
+export interface ArticleFeedback {
+  id: string
+  analysis_id: string
+  recommendation_accuracy: 'too_high' | 'accurate' | 'too_low'
+  time_worthwhile: 'no' | 'partly' | 'yes'
+  new_knowledge: 'none' | 'some' | 'much'
+  summary_quality: 'accurate' | 'omission' | 'misleading' | 'not_sure'
+  key_takeaway: string | null
+  ai_recommendation: string | null
+  model: string | null
+  prompt_version: string
+  updated_at: string
+}
+
+export type FeedbackUpdate = Pick<
+  ArticleFeedback,
+  'recommendation_accuracy' | 'time_worthwhile' | 'new_knowledge' | 'summary_quality' | 'key_takeaway'
+>
+
+export interface CalibrationStats {
+  evaluation_mode: boolean
+  questionnaire_completed: boolean
+  completed_analyses: number
+  feedback_count: number
+  accurate_count: number
+  too_high_count: number
+  too_low_count: number
+  accuracy_rate: number | null
+  summary_issue_count: number
+  high_value_miss_count: number
+}
+
 export interface ContentSummary {
   id: string
   title: string
@@ -67,6 +118,7 @@ export interface ContentDetail extends ContentSummary {
   triage: TriageResult | null
   content_analysis: ContentAnalysisResult | null
   personal_evaluation: PersonalEvaluationResult | null
+  feedback: ArticleFeedback | null
 }
 
 export interface CaptureAccepted {
@@ -107,4 +159,39 @@ export async function retryAnalysis(analysisId: string): Promise<CaptureAccepted
     method: 'POST',
   })
   return apiResponse<CaptureAccepted>(response)
+}
+
+/** 获取初始问卷和当前评测模式。 */
+export async function getProfile(): Promise<UserProfile> {
+  const response = await fetch('/api/v1/profile')
+  return apiResponse<UserProfile>(response)
+}
+
+/** 保存用户明确填写的画像，不从行为中自动推断。 */
+export async function updateProfile(profile: ProfileUpdate): Promise<UserProfile> {
+  const response = await fetch('/api/v1/profile', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
+  return apiResponse<UserProfile>(response)
+}
+
+/** 新增或更新一次分析对应的阅读后评价。 */
+export async function saveFeedback(
+  analysisId: string,
+  feedback: FeedbackUpdate,
+): Promise<ArticleFeedback> {
+  const response = await fetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/feedback`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(feedback),
+  })
+  return apiResponse<ArticleFeedback>(response)
+}
+
+/** 获取评测模式积累的基础校准指标。 */
+export async function getCalibrationStats(): Promise<CalibrationStats> {
+  const response = await fetch('/api/v1/calibration/stats')
+  return apiResponse<CalibrationStats>(response)
 }

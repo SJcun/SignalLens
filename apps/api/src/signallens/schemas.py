@@ -105,6 +105,66 @@ class ContentSummaryResponse(BaseModel):
     _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
 
 
+class KnownTopicPayload(BaseModel):
+    """用户明确声明的知识领域及熟悉程度。"""
+
+    topic: str = Field(min_length=1, max_length=100)
+    level: Literal["basic", "intermediate", "advanced"]
+
+
+class ProfileUpdate(BaseModel):
+    """初始问卷和后续手动调整共用的画像输入。"""
+
+    focus_topics: list[str] = Field(min_length=1, max_length=5)
+    known_topics: list[KnownTopicPayload] = Field(default_factory=list, max_length=10)
+    reading_goals: list[
+        Literal["solve_problems", "systematic_learning", "follow_updates", "explore"]
+    ] = Field(min_length=1, max_length=4)
+    preferred_depth: Literal["quick", "balanced", "deep"]
+    time_budget_minutes: int = Field(ge=5, le=120)
+    exploration_level: Literal["low", "medium", "high"]
+    evaluation_mode: bool
+
+
+class ProfileResponse(BaseModel):
+    """当前单用户画像和问卷状态。"""
+
+    focus_topics: list[str]
+    known_topics: list[KnownTopicPayload]
+    reading_goals: list[str]
+    preferred_depth: Literal["quick", "balanced", "deep"]
+    time_budget_minutes: int
+    exploration_level: Literal["low", "medium", "high"]
+    evaluation_mode: bool
+    questionnaire_completed: bool
+    updated_at: datetime
+
+    _normalize_updated_at = field_validator("updated_at", mode="before")(attach_utc)
+
+
+class FeedbackUpsert(BaseModel):
+    """阅读后提交的最小人工评价。"""
+
+    recommendation_accuracy: Literal["too_high", "accurate", "too_low"]
+    time_worthwhile: Literal["no", "partly", "yes"]
+    new_knowledge: Literal["none", "some", "much"]
+    summary_quality: Literal["accurate", "omission", "misleading", "not_sure"]
+    key_takeaway: str | None = Field(default=None, max_length=2000)
+
+
+class FeedbackResponse(FeedbackUpsert):
+    """文章详情页回显的人工评价。"""
+
+    id: str
+    analysis_id: str
+    ai_recommendation: str | None
+    model: str | None
+    prompt_version: str
+    updated_at: datetime
+
+    _normalize_updated_at = field_validator("updated_at", mode="before")(attach_utc)
+
+
 class ContentDetailResponse(ContentSummaryResponse):
     """内容详情页需要的原文快照与完整分析结果。"""
 
@@ -112,6 +172,22 @@ class ContentDetailResponse(ContentSummaryResponse):
     triage: TriageContent | None
     content_analysis: AnalyzeContent | None
     personal_evaluation: EvaluateForUser | None
+    feedback: FeedbackResponse | None
+
+
+class CalibrationStatsResponse(BaseModel):
+    """评测模式所需的基础校准指标。"""
+
+    evaluation_mode: bool
+    questionnaire_completed: bool
+    completed_analyses: int
+    feedback_count: int
+    accurate_count: int
+    too_high_count: int
+    too_low_count: int
+    accuracy_rate: float | None
+    summary_issue_count: int
+    high_value_miss_count: int
 
 
 class HealthResponse(BaseModel):

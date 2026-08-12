@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { getContent, retryAnalysis } from '../api'
+import {
+  getContent,
+  getProfile,
+  retryAnalysis,
+  saveFeedback,
+  type FeedbackUpdate,
+} from '../api'
 import { renderMarkdown } from '../markdown'
 
 const recommendationText = {
@@ -31,6 +37,7 @@ const route = useRoute()
 const contentId = String(route.params.contentId)
 const queryClient = useQueryClient()
 const showMarkdownSource = ref(false)
+const profile = useQuery({ queryKey: ['profile'], queryFn: getProfile })
 const content = useQuery({
   queryKey: ['content', contentId],
   queryFn: () => getContent(contentId),
@@ -51,6 +58,38 @@ const retry = useMutation({
 const renderedMarkdown = computed(() => {
   const data = content.data.value
   return data ? renderMarkdown(data.markdown, data.source_url) : ''
+})
+const feedbackForm = reactive<FeedbackUpdate>({
+  recommendation_accuracy: 'accurate',
+  time_worthwhile: 'yes',
+  new_knowledge: 'some',
+  summary_quality: 'accurate',
+  key_takeaway: '',
+})
+
+watch(
+  () => content.data.value?.feedback,
+  (feedback) => {
+    if (!feedback) return
+    Object.assign(feedbackForm, {
+      recommendation_accuracy: feedback.recommendation_accuracy,
+      time_worthwhile: feedback.time_worthwhile,
+      new_knowledge: feedback.new_knowledge,
+      summary_quality: feedback.summary_quality,
+      key_takeaway: feedback.key_takeaway || '',
+    })
+  },
+  { immediate: true },
+)
+
+const submitFeedback = useMutation({
+  mutationFn: () => saveFeedback(content.data.value!.analysis_id, { ...feedbackForm }),
+  onSuccess: async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['content', contentId] }),
+      queryClient.invalidateQueries({ queryKey: ['calibration-stats'] }),
+    ])
+  },
 })
 </script>
 
@@ -167,6 +206,82 @@ const renderedMarkdown = computed(() => {
         <h2>快速分诊结论</h2>
         <p>{{ content.data.value.triage.reason }}</p>
       </article>
+
+      <form
+        v-if="content.data.value.analysis_status === 'completed'"
+        class="detail-section feedback-form"
+        @submit.prevent="submitFeedback.mutate()"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Human Calibration</p>
+            <h2>{{ profile.data.value?.evaluation_mode ? '阅读后评测' : '反馈 AI 判断' }}</h2>
+          </div>
+          <span v-if="content.data.value.feedback" class="saved-badge">已评价</span>
+        </div>
+        <p>
+          {{ profile.data.value?.evaluation_mode
+            ? '请在完成实际阅读后评价。你的答案会和本次 AI 结果快照一起保存。'
+            : '评测模式已关闭，但你仍可以随时修正 AI 的判断。' }}
+        </p>
+
+        <div class="feedback-grid">
+          <label>
+            <span>AI 推荐的阅读投入</span>
+            <select v-model="feedbackForm.recommendation_accuracy">
+              <option value="too_high">建议偏高</option>
+              <option value="accurate">基本准确</option>
+              <option value="too_low">建议偏低</option>
+            </select>
+          </label>
+          <label>
+            <span>实际是否值得投入时间</span>
+            <select v-model="feedbackForm.time_worthwhile">
+              <option value="yes">值得</option>
+              <option value="partly">部分值得</option>
+              <option value="no">不值得</option>
+            </select>
+          </label>
+          <label>
+            <span>获得了多少新知识</span>
+            <select v-model="feedbackForm.new_knowledge">
+              <option value="much">很多</option>
+              <option value="some">一些</option>
+              <option value="none">没有</option>
+            </select>
+          </label>
+          <label>
+            <span>AI 摘要质量</span>
+            <select v-model="feedbackForm.summary_quality">
+              <option value="accurate">准确</option>
+              <option value="omission">有重要遗漏</option>
+              <option value="misleading">存在误导</option>
+              <option value="not_sure">暂时无法判断</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="feedback-note">
+          <span>最重要的收获，或 AI 遗漏了什么（选填）</span>
+          <textarea
+            v-model="feedbackForm.key_takeaway"
+            rows="3"
+            maxlength="2000"
+            placeholder="一句话就够；早期评测阶段建议填写。"
+          ></textarea>
+        </label>
+        <div class="form-actions">
+          <button class="primary-button" type="submit" :disabled="submitFeedback.isPending.value">
+            {{ submitFeedback.isPending.value
+              ? '正在保存…'
+              : content.data.value.feedback ? '更新评价' : '提交评价' }}
+          </button>
+          <span v-if="submitFeedback.isSuccess.value" class="success-text">评价已保存。</span>
+          <span v-if="submitFeedback.isError.value" class="error-text">
+            {{ submitFeedback.error.value?.message }}
+          </span>
+        </div>
+      </form>
 
       <article class="detail-section">
         <div class="section-heading">

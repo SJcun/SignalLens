@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from signallens.analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
 from signallens.database import engine
 from signallens.main import app
-from signallens.worker import process_next_job
+from signallens.worker import _load_user_profile, process_next_job
 
 
 class FakeProvider:
@@ -110,6 +110,28 @@ def test_health_and_idempotent_capture() -> None:
 
     with TestClient(app) as client:
         assert client.get("/api/v1/health").json()["status"] == "ok"
+        empty_profile = client.get("/api/v1/profile")
+        assert empty_profile.status_code == 200
+        assert empty_profile.json()["questionnaire_completed"] is False
+        profile = client.put(
+            "/api/v1/profile",
+            json={
+                "focus_topics": ["AI 工程", "软件架构"],
+                "known_topics": [{"topic": "Python", "level": "advanced"}],
+                "reading_goals": ["solve_problems", "explore"],
+                "preferred_depth": "balanced",
+                "time_budget_minutes": 25,
+                "exploration_level": "high",
+                "evaluation_mode": True,
+            },
+        )
+        assert profile.status_code == 200
+        assert profile.json()["questionnaire_completed"] is True
+        assert profile.json()["evaluation_mode"] is True
+        worker_profile = _load_user_profile()
+        assert worker_profile.focus_topics == ["AI 工程", "软件架构"]
+        assert worker_profile.known_topics == ["Python（advanced）"]
+
         first = client.post("/api/v1/captures", json=capture_payload())
         repeated_payload = capture_payload()
         repeated_payload["capture_id"] = "capture-test-0002"
@@ -143,6 +165,65 @@ def test_health_and_idempotent_capture() -> None:
         assert completed.json()["triage"]["decision"] == "continue"
         assert completed.json()["one_sentence_summary"] == "文章介绍了一个值得验证的新方法。"
         assert completed.json()["recommendation"] == "selective_read"
+        assert completed.json()["feedback"] is None
+
+        feedback = client.put(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/feedback",
+            json={
+                "recommendation_accuracy": "accurate",
+                "time_worthwhile": "yes",
+                "new_knowledge": "some",
+                "summary_quality": "omission",
+                "key_takeaway": "AI 遗漏了文章对实施成本的讨论。",
+            },
+        )
+        assert feedback.status_code == 200
+        assert feedback.json()["ai_recommendation"] == "selective_read"
+        assert feedback.json()["model"] == "fake-test-model"
+
+        stats = client.get("/api/v1/calibration/stats")
+        assert stats.status_code == 200
+        assert stats.json()["feedback_count"] == 1
+        assert stats.json()["accuracy_rate"] == 100.0
+        assert stats.json()["summary_issue_count"] == 1
+
+        updated_feedback = client.put(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/feedback",
+            json={
+                "recommendation_accuracy": "too_low",
+                "time_worthwhile": "yes",
+                "new_knowledge": "much",
+                "summary_quality": "accurate",
+                "key_takeaway": "更新后的评价。",
+            },
+        )
+        assert updated_feedback.status_code == 200
+        assert client.get("/api/v1/calibration/stats").json()["feedback_count"] == 1
+
+        # 自动采集若被 AI 忽略，但用户认为值得读，应计入高价值漏判。
+        ignored_payload = capture_payload()
+        ignored_payload["capture_id"] = "capture-test-ignored"
+        ignored_payload["source"]["url"] = "https://example.com/ignored-article"
+        ignored_payload["capture"]["mode"] = "automatic"
+        ignored = client.post("/api/v1/captures", json=ignored_payload)
+        assert ignored.status_code == 202
+        assert process_next_job(FakeProvider()) is True
+        ignored_feedback = client.put(
+            f"/api/v1/analyses/{ignored.json()['analysis_id']}/feedback",
+            json={
+                "recommendation_accuracy": "too_low",
+                "time_worthwhile": "yes",
+                "new_knowledge": "much",
+                "summary_quality": "not_sure",
+                "key_takeaway": "这篇内容不应被直接忽略。",
+            },
+        )
+        assert ignored_feedback.status_code == 200
+        assert ignored_feedback.json()["ai_recommendation"] == "ignore"
+        ignored_stats = client.get("/api/v1/calibration/stats").json()
+        assert ignored_stats["feedback_count"] == 2
+        assert ignored_stats["high_value_miss_count"] == 1
+
         completed_retry_attempt = client.post(
             f"/api/v1/analyses/{first.json()['analysis_id']}/retry"
         )

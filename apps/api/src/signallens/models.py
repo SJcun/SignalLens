@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -76,3 +76,49 @@ class AnalysisJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     analysis: Mapped[Analysis] = relationship(back_populates="job")
+
+
+class UserProfileRecord(Base):
+    """单用户阶段的显式阅读画像和评测模式设置。"""
+
+    __tablename__ = "user_profile"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    focus_topics_json: Mapped[list] = mapped_column(JSON, default=list)
+    known_topics_json: Mapped[list] = mapped_column(JSON, default=list)
+    reading_goals_json: Mapped[list] = mapped_column(JSON, default=list)
+    preferred_depth: Mapped[str] = mapped_column(String(32), default="balanced")
+    time_budget_minutes: Mapped[int] = mapped_column(Integer, default=20)
+    exploration_level: Mapped[str] = mapped_column(String(16), default="medium")
+    evaluation_mode: Mapped[bool] = mapped_column(Boolean, default=True)
+    questionnaire_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class ArticleFeedback(Base):
+    """用户对一次 AI 分析的人工评价及提交时的结果快照。"""
+
+    __tablename__ = "article_feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    content_id: Mapped[str] = mapped_column(ForeignKey("contents.id"), index=True)
+    analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("analyses.id"), unique=True, index=True
+    )
+    recommendation_accuracy: Mapped[str] = mapped_column(String(16))
+    time_worthwhile: Mapped[str] = mapped_column(String(16))
+    new_knowledge: Mapped[str] = mapped_column(String(16))
+    summary_quality: Mapped[str] = mapped_column(String(16))
+    key_takeaway: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_recommendation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(32))
+    analysis_snapshot_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )

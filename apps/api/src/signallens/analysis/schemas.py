@@ -127,3 +127,7 @@ class UserProfile(BaseModel):
 
     focus_topics: list[str] = Field(default_factory=list)
     known_topics: list[str] = Field(default_factory=list)
+    reading_goals: list[str] = Field(default_factory=list)
+    preferred_depth: str = "balanced"
+    time_budget_minutes: int = 20
+    exploration_level: str = "medium"
