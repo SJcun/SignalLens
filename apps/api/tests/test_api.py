@@ -153,7 +153,22 @@ def test_health_and_idempotent_capture() -> None:
         assert worker_profile.focus_topics == ["AI 工程", "软件架构"]
         assert worker_profile.known_topics == ["Python（advanced）"]
 
+        admin_authorization = client.headers["Authorization"]
+        first_key = client.post("/api/v1/plugin-key")
+        assert first_key.status_code == 200
+        assert first_key.json()["api_key"].startswith("sk-sl-")
+        key_status = client.get("/api/v1/plugin-key")
+        assert key_status.json()["configured"] is True
+        assert key_status.json()["key_prefix"] == first_key.json()["key_prefix"]
+
+        # 单用户阶段只保留一个插件 Key，重新生成后旧 Key 立即失效。
+        second_key = client.post("/api/v1/plugin-key").json()["api_key"]
+        client.headers["Authorization"] = f"Bearer {first_key.json()['api_key']}"
+        assert client.get("/api/v1/profile").status_code == 401
+        assert client.post("/api/v1/captures", json=capture_payload()).status_code == 401
+        client.headers["Authorization"] = f"Bearer {second_key}"
         first = client.post("/api/v1/captures", json=capture_payload())
+        client.headers["Authorization"] = admin_authorization
         repeated_payload = capture_payload()
         repeated_payload["capture_id"] = "capture-test-0002"
         repeated_payload["source"]["url"] = (
@@ -266,6 +281,14 @@ def test_health_and_idempotent_capture() -> None:
         completed_retry = client.get(f"/api/v1/analyses/{failed.json()['analysis_id']}")
         assert completed_retry.json()["status"] == "completed"
         assert process_next_job(FakeProvider()) is False
+
+        assert client.delete("/api/v1/plugin-key").status_code == 200
+        client.headers["Authorization"] = f"Bearer {second_key}"
+        revoked_payload = capture_payload()
+        revoked_payload["capture_id"] = "capture-test-revoked-key"
+        revoked_payload["source"]["url"] = "https://example.com/revoked-key"
+        assert client.post("/api/v1/captures", json=revoked_payload).status_code == 401
+        client.headers["Authorization"] = admin_authorization
 
         changed = client.post(
             "/api/v1/auth/change-password",

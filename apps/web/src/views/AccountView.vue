@@ -3,15 +3,27 @@ import { useQuery } from '@tanstack/vue-query'
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { changePassword, getCurrentUser, logout } from '../api'
+import {
+  changePassword,
+  generatePluginKey,
+  getCurrentUser,
+  getPluginKeyStatus,
+  logout,
+  revokePluginKey,
+} from '../api'
 
 const router = useRouter()
 const account = useQuery({ queryKey: ['current-user'], queryFn: getCurrentUser })
+const pluginKey = useQuery({ queryKey: ['plugin-key'], queryFn: getPluginKeyStatus })
 const currentPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
 const busy = ref(false)
 const error = ref('')
+const generatedKey = ref('')
+const pluginKeyBusy = ref(false)
+const pluginKeyError = ref('')
+const copied = ref(false)
 
 /** 校验两次输入后修改密码；服务端成功时所有设备需要重新登录。 */
 async function submitPassword(): Promise<void> {
@@ -35,6 +47,49 @@ async function submitPassword(): Promise<void> {
 async function signOut(): Promise<void> {
   await logout()
   await router.replace('/login')
+}
+
+/** 生成新的插件 Key；已有 Key 时明确提示旧值将立即失效。 */
+async function createPluginKey(): Promise<void> {
+  if (pluginKey.data.value?.configured && !window.confirm('重新生成后，插件中原来的 Key 会立即失效。继续吗？')) return
+  pluginKeyBusy.value = true
+  pluginKeyError.value = ''
+  try {
+    const result = await generatePluginKey()
+    generatedKey.value = result.api_key
+    copied.value = false
+    await pluginKey.refetch()
+  } catch (reason) {
+    pluginKeyError.value = reason instanceof Error ? reason.message : '插件 Key 生成失败'
+  } finally {
+    pluginKeyBusy.value = false
+  }
+}
+
+/** 复制仅展示一次的完整 Key。 */
+async function copyPluginKey(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(generatedKey.value)
+    copied.value = true
+  } catch {
+    pluginKeyError.value = '自动复制失败，请手动复制 Key'
+  }
+}
+
+/** 撤销当前 Key，阻止所有已配置插件继续提交。 */
+async function removePluginKey(): Promise<void> {
+  if (!window.confirm('撤销后，插件将无法继续提交文档。继续吗？')) return
+  pluginKeyBusy.value = true
+  pluginKeyError.value = ''
+  try {
+    await revokePluginKey()
+    generatedKey.value = ''
+    await pluginKey.refetch()
+  } catch (reason) {
+    pluginKeyError.value = reason instanceof Error ? reason.message : '插件 Key 撤销失败'
+  } finally {
+    pluginKeyBusy.value = false
+  }
 }
 </script>
 
@@ -68,6 +123,45 @@ async function signOut(): Promise<void> {
         {{ busy ? '正在修改…' : '修改密码并重新登录' }}
       </button>
     </form>
+
+    <section class="panel settings-form plugin-key-panel">
+      <div>
+        <h2>浏览器插件 Key</h2>
+        <p>插件无需登录。把这里生成的 Key 填入插件后，只能提交文档，不能读取账户数据。</p>
+      </div>
+
+      <div v-if="pluginKey.data.value?.configured" class="key-status-row">
+        <span>当前 Key：<code>{{ pluginKey.data.value.key_prefix }}••••••</code></span>
+        <span v-if="pluginKey.data.value.last_used_at">插件已成功使用</span>
+      </div>
+      <p v-else class="muted">尚未生成插件 Key。</p>
+
+      <div v-if="generatedKey" class="generated-key">
+        <strong>请立即复制，此完整 Key 只显示一次</strong>
+        <div class="key-copy-row">
+          <input :value="generatedKey" readonly aria-label="新生成的插件 Key" />
+          <button class="secondary-button" type="button" @click="copyPluginKey">
+            {{ copied ? '已复制' : '复制' }}
+          </button>
+        </div>
+      </div>
+
+      <p v-if="pluginKeyError" class="form-error">{{ pluginKeyError }}</p>
+      <div class="form-actions">
+        <button class="primary-button" type="button" :disabled="pluginKeyBusy" @click="createPluginKey">
+          {{ pluginKey.data.value?.configured ? '重新生成 Key' : '生成插件 Key' }}
+        </button>
+        <button
+          v-if="pluginKey.data.value?.configured"
+          class="secondary-button"
+          type="button"
+          :disabled="pluginKeyBusy"
+          @click="removePluginKey"
+        >
+          撤销 Key
+        </button>
+      </div>
+    </section>
 
     <button class="secondary-button account-logout" type="button" @click="signOut">退出当前登录</button>
   </section>

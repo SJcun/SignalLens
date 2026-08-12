@@ -50,15 +50,14 @@ const state: PopupState = {
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T
 const el = {
-  loginPanel: $('login-panel'),
-  loginForm: $<HTMLFormElement>('login-form'),
-  loginUsername: $<HTMLInputElement>('login-username'),
-  loginPassword: $<HTMLInputElement>('login-password'),
-  loginSubmit: $<HTMLButtonElement>('login-submit'),
-  loginError: $('login-error'),
+  keyPanel: $('key-panel'),
+  keyForm: $<HTMLFormElement>('key-form'),
+  pluginKey: $<HTMLInputElement>('plugin-key'),
+  keySubmit: $<HTMLButtonElement>('key-submit'),
+  keyError: $('key-error'),
   pluginContent: $('plugin-content'),
-  authSummary: $('auth-summary'),
-  logout: $<HTMLButtonElement>('logout'),
+  keySummary: $('key-summary'),
+  changeKey: $<HTMLButtonElement>('change-key'),
   status: $('status'),
   meta: $('meta'),
   metaTitle: $('meta-title'),
@@ -98,75 +97,71 @@ function setStatus(text: string, isError = false): void {
   el.status.classList.remove('hidden')
 }
 
-/** 显示插件登录表单，并隐藏所有采集操作。 */
-function showLogin(error = ''): void {
+/** 显示 Key 配置表单，并隐藏所有采集操作。 */
+function showKeyForm(error = ''): void {
   el.pluginContent.classList.add('hidden')
-  el.authSummary.classList.add('hidden')
-  el.logout.classList.add('hidden')
+  el.keySummary.classList.add('hidden')
+  el.changeKey.classList.add('hidden')
   el.reconvert.classList.add('hidden')
-  el.loginPanel.classList.remove('hidden')
-  el.loginError.textContent = error
-  el.loginError.classList.toggle('hidden', !error)
-  el.loginPassword.value = ''
+  el.keyPanel.classList.remove('hidden')
+  el.keyError.textContent = error
+  el.keyError.classList.toggle('hidden', !error)
+  el.pluginKey.value = ''
 }
 
-/** 登录成功后展示账户状态，并开始提取当前网页。 */
-function showAuthenticated(username: string, mustChangePassword: boolean): void {
-  el.loginPanel.classList.add('hidden')
+/** Key 已配置时展示采集界面，并开始提取当前网页。 */
+function showKeyConfigured(keyPrefix: string): void {
+  el.keyPanel.classList.add('hidden')
   el.pluginContent.classList.remove('hidden')
-  el.authSummary.textContent = mustChangePassword ? `${username} · 请改密` : username
-  el.authSummary.classList.remove('hidden')
-  el.logout.classList.remove('hidden')
+  el.keySummary.textContent = `${keyPrefix}••••`
+  el.keySummary.classList.remove('hidden')
+  el.changeKey.classList.remove('hidden')
   el.reconvert.classList.remove('hidden')
   void convert()
 }
 
-/** 提交插件登录表单，密码只发送给后端，不写入扩展存储。 */
-async function submitLogin(): Promise<void> {
-  el.loginSubmit.disabled = true
-  el.loginError.classList.add('hidden')
+/** 保存从 Web 复制的插件 Key；插件不接触管理员账号密码。 */
+async function submitApiKey(): Promise<void> {
+  el.keySubmit.disabled = true
+  el.keyError.classList.add('hidden')
   try {
     const response = await chrome.runtime.sendMessage({
-      type: 'LOGIN',
-      username: el.loginUsername.value.trim(),
-      password: el.loginPassword.value,
+      type: 'SAVE_API_KEY',
+      apiKey: el.pluginKey.value,
     }) as {
       ok: boolean
       error?: string
-      username?: string
-      mustChangePassword?: boolean
     }
     if (!response.ok) {
-      showLogin(response.error || '登录失败')
+      showKeyForm(response.error || 'Key 保存失败')
       return
     }
-    showAuthenticated(response.username || 'admin', Boolean(response.mustChangePassword))
+    showKeyConfigured(el.pluginKey.value.trim().slice(0, 14))
   } catch (error) {
-    showLogin((error as Error).message)
+    showKeyForm((error as Error).message)
   } finally {
-    el.loginSubmit.disabled = false
+    el.keySubmit.disabled = false
   }
 }
 
-/** 打开 Popup 时向后端确认扩展中保存的会话。 */
+/** 打开 Popup 时读取扩展中保存的 Key 配置状态。 */
 async function initialize(): Promise<void> {
   try {
-    const response = await chrome.runtime.sendMessage({ type: 'AUTH_STATUS' }) as {
+    const response = await chrome.runtime.sendMessage({ type: 'API_KEY_STATUS' }) as {
       ok: boolean
-      authenticated: boolean
+      configured: boolean
       error?: string
-      username?: string
-      mustChangePassword?: boolean
+      keyPrefix?: string
     }
     if (!response.ok) {
-      showLogin(response.error || '暂时无法连接 SignalLens')
-    } else if (response.authenticated) {
-      showAuthenticated(response.username || 'admin', Boolean(response.mustChangePassword))
+      showKeyForm(response.error || '无法读取插件 Key')
+    } else if (response.configured) {
+      showKeyConfigured(response.keyPrefix || 'sk-sl-')
     } else {
-      showLogin()
+      showKeyForm()
     }
   } catch (error) {
-    showLogin((error as Error).message)
+    showKeyForm((error as Error).message)
   }
 }
 
@@ -266,11 +261,11 @@ async function submitAnalysis(): Promise<void> {
       warnings: state.warnings,
       engine: state.engineId,
     }),
-  }) as { ok: boolean; error?: string; contentId?: string; authRequired?: boolean }
+  }) as { ok: boolean; error?: string; contentId?: string; keyRequired?: boolean }
   el.analyze.disabled = false
   if (!response.ok) {
-    if (response.authRequired) {
-      showLogin(response.error)
+    if (response.keyRequired) {
+      showKeyForm(response.error)
       return
     }
     setStatus(response.error || '提交失败', true)
@@ -336,13 +331,11 @@ async function openPreview(): Promise<void> {
 }
 
 el.analyze.addEventListener('click', () => void submitAnalysis())
-el.loginForm.addEventListener('submit', (event) => {
+el.keyForm.addEventListener('submit', (event) => {
   event.preventDefault()
-  void submitLogin()
+  void submitApiKey()
 })
-el.logout.addEventListener('click', () => {
-  void chrome.runtime.sendMessage({ type: 'LOGOUT' }).finally(() => showLogin())
-})
+el.changeKey.addEventListener('click', () => showKeyForm())
 el.copy.addEventListener('click', () => void copyMarkdown())
 el.download.addEventListener('click', downloadMarkdown)
 el.downloadJson.addEventListener('click', downloadJson)

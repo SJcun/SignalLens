@@ -160,6 +160,11 @@ p { color: #a7b1bf; line-height: 1.7; }
 .settings-form small { color: var(--muted); }
 .warning-banner { margin: 24px 0; padding: 14px 16px; color: #f0c987; background: #2a2116; border: 1px solid #55401f; border-radius: 10px; }
 .account-logout { margin-top: 18px; }
+.plugin-key-panel { margin-top: 22px; }
+.key-status-row { display: flex; justify-content: space-between; gap: 16px; padding: 13px 14px; color: #b8c2cf; background: #0d131b; border: 1px solid var(--line); border-radius: 9px; }
+.key-status-row code { color: var(--accent); }
+.generated-key { display: grid; gap: 10px; padding: 16px; color: #f0c987; background: #2a2116; border: 1px solid #55401f; border-radius: 10px; }
+.key-copy-row { display: grid; grid-template-columns: 1fr auto; gap: 9px; }
 
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }

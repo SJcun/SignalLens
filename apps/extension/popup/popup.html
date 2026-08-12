@@ -8,20 +8,19 @@
     <header class="topbar">
       <div><strong>SignalLens</strong><span>网页内容分诊</span></div>
       <div class="topbar-actions">
-        <span id="auth-summary" class="hidden"></span>
-        <button id="logout" class="text-button hidden" type="button">退出</button>
+        <span id="key-summary" class="hidden"></span>
+        <button id="change-key" class="text-button hidden" type="button">更换 Key</button>
         <button id="reconvert" class="icon-button hidden" title="重新提取" aria-label="重新提取">↻</button>
       </div>
     </header>
 
-    <section id="login-panel" class="login-panel hidden">
-      <strong>登录 SignalLens</strong>
-      <span>使用与 Web 端相同的管理员账户。</span>
-      <form id="login-form">
-        <label>用户名<input id="login-username" value="admin" autocomplete="username" required /></label>
-        <label>密码<input id="login-password" type="password" autocomplete="current-password" required /></label>
-        <p id="login-error" class="login-error hidden"></p>
-        <button id="login-submit" class="primary wide" type="submit">登录</button>
+    <section id="key-panel" class="key-panel hidden">
+      <strong>配置插件 Key</strong>
+      <span>在 Web 的“账户安全”页生成 Key，然后粘贴到这里。</span>
+      <form id="key-form">
+        <label>插件 Key<input id="plugin-key" type="password" autocomplete="off" placeholder="sk-sl-..." required /></label>
+        <p id="key-error" class="key-error hidden"></p>
+        <button id="key-submit" class="primary wide" type="submit">保存 Key</button>
       </form>
     </section>
 

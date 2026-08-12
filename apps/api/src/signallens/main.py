@@ -11,9 +11,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .auth import (
+    create_plugin_key,
     create_session,
     ensure_initial_admin,
     hash_password,
+    load_plugin_key,
     load_session,
     remove_bootstrap_password_file,
     revoke_user_sessions,
@@ -27,6 +29,7 @@ from .models import (
     ArticleFeedback,
     AuthSession,
     Content,
+    PluginApiKey,
     UserProfileRecord,
     utc_now,
 )
@@ -41,10 +44,12 @@ from .schemas import (
     CurrentUserResponse,
     FeedbackResponse,
     FeedbackUpsert,
+    GeneratedPluginKeyResponse,
     HealthResponse,
     LoginRequest,
     LoginResponse,
     MessageResponse,
+    PluginKeyStatusResponse,
     ProfileResponse,
     ProfileUpdate,
 )
@@ -93,6 +98,17 @@ async def require_api_authentication(request: Request, call_next):
         return _unauthorized_response()
 
     with SessionLocal() as session:
+        if raw_token.startswith("sk-sl-"):
+            # 插件 Key 采用最小权限，只允许提交采集内容。
+            if path != "/api/v1/captures" or request.method != "POST":
+                return _unauthorized_response()
+            plugin_key = load_plugin_key(session, raw_token)
+            if plugin_key is None:
+                return _unauthorized_response()
+            session.commit()
+            request.state.auth_kind = "plugin_key"
+            return await call_next(request)
+
         authenticated = load_session(session, raw_token)
         if authenticated is None:
             return _unauthorized_response()
@@ -102,6 +118,7 @@ async def require_api_authentication(request: Request, call_next):
         request.state.auth_username = user.username
         request.state.must_change_password = user.must_change_password
         request.state.auth_session_id = auth_session.id
+        request.state.auth_kind = "admin"
     return await call_next(request)
 
 
@@ -166,7 +183,7 @@ def change_password(
     request: Request,
     session: Annotated[Session, Depends(get_session)],
 ) -> MessageResponse:
-    """修改管理员密码，并撤销 Web 与插件的全部旧会话。"""
+    """修改管理员密码并撤销全部 Web 会话；独立插件 Key 不受影响。"""
 
     user = session.get(AdminUser, request.state.auth_user_id)
     if user is None:
@@ -183,6 +200,49 @@ def change_password(
     session.commit()
     remove_bootstrap_password_file()
     return MessageResponse(message="密码已修改，请重新登录")
+
+
+@app.get("/api/v1/plugin-key", response_model=PluginKeyStatusResponse)
+def get_plugin_key_status(
+    session: Annotated[Session, Depends(get_session)],
+) -> PluginKeyStatusResponse:
+    """返回当前插件 Key 的非敏感状态。"""
+
+    record = session.get(PluginApiKey, "default")
+    return PluginKeyStatusResponse(
+        configured=record is not None,
+        key_prefix=record.key_prefix if record else None,
+        created_at=record.created_at if record else None,
+        last_used_at=record.last_used_at if record else None,
+    )
+
+
+@app.post("/api/v1/plugin-key", response_model=GeneratedPluginKeyResponse)
+def generate_plugin_key(
+    session: Annotated[Session, Depends(get_session)],
+) -> GeneratedPluginKeyResponse:
+    """生成并替换唯一插件 Key，完整值只在本次响应中返回。"""
+
+    raw_key, record = create_plugin_key(session)
+    session.commit()
+    return GeneratedPluginKeyResponse(
+        api_key=raw_key,
+        key_prefix=record.key_prefix,
+        created_at=record.created_at,
+    )
+
+
+@app.delete("/api/v1/plugin-key", response_model=MessageResponse)
+def revoke_plugin_key(
+    session: Annotated[Session, Depends(get_session)],
+) -> MessageResponse:
+    """撤销当前插件 Key，已配置插件会立即无法继续提交。"""
+
+    record = session.get(PluginApiKey, "default")
+    if record is not None:
+        session.delete(record)
+        session.commit()
+    return MessageResponse(message="插件 Key 已撤销")
 
 
 @app.get("/api/v1/profile", response_model=ProfileResponse)

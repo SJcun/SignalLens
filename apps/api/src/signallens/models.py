@@ -140,7 +140,7 @@ class AdminUser(Base):
 
 
 class AuthSession(Base):
-    """Web 或浏览器插件登录后创建的可撤销会话。"""
+    """Web 管理员登录后创建的可撤销会话。"""
 
     __tablename__ = "auth_sessions"
 
@@ -149,3 +149,15 @@ class AuthSession(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PluginApiKey(Base):
+    """允许浏览器插件提交采集内容的单一最小权限密钥。"""
+
+    __tablename__ = "plugin_api_key"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    key_prefix: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

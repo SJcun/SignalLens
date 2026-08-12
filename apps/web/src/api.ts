@@ -18,6 +18,19 @@ export interface CurrentUser {
   must_change_password: boolean
 }
 
+export interface PluginKeyStatus {
+  configured: boolean
+  key_prefix: string | null
+  created_at: string | null
+  last_used_at: string | null
+}
+
+export interface GeneratedPluginKey {
+  api_key: string
+  key_prefix: string
+  created_at: string
+}
+
 export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
 export type Recommendation = 'ignore' | 'summary_enough' | 'selective_read' | 'deep_read'
 
@@ -196,6 +209,24 @@ export async function logout(): Promise<void> {
   } finally {
     clearAccessToken()
   }
+}
+
+/** 获取插件 Key 的非敏感状态。 */
+export async function getPluginKeyStatus(): Promise<PluginKeyStatus> {
+  const response = await authenticatedFetch('/api/v1/plugin-key')
+  return apiResponse<PluginKeyStatus>(response)
+}
+
+/** 生成并替换唯一插件 Key；完整值只在本次响应中返回。 */
+export async function generatePluginKey(): Promise<GeneratedPluginKey> {
+  const response = await authenticatedFetch('/api/v1/plugin-key', { method: 'POST' })
+  return apiResponse<GeneratedPluginKey>(response)
+}
+
+/** 撤销插件 Key，使已配置的插件立即停止提交。 */
+export async function revokePluginKey(): Promise<void> {
+  const response = await authenticatedFetch('/api/v1/plugin-key', { method: 'DELETE' })
+  await apiResponse<{ message: string }>(response)
 }
 
 /** 获取最近采集的内容及最新分析状态。 */

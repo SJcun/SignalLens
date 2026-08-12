@@ -15,11 +15,11 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 
 | 模块 | 已实现 | 尚未实现 |
 | --- | --- | --- |
-| 浏览器插件 | 登录/退出、网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、鉴权提交 | 分析结果摘要 |
-| 后端 API | 单用户登录与改密、可撤销会话、内容采集与去重、分析状态、显式用户画像、人工反馈快照、校准统计 | 画像修改建议 |
+| 浏览器插件 | 插件 Key 配置、网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、鉴权提交 | 分析结果摘要 |
+| 后端 API | 单用户登录与改密、可撤销 Web 会话、最小权限插件 Key、内容采集与去重、分析状态、显式用户画像、人工反馈快照、校准统计 | 画像修改建议 |
 | 数据层 | SQLite、WAL、内容/分析/任务持久化、已有重复数据迁移 | 正式 Alembic 迁移体系 |
 | Worker | OpenAI/DeepSeek JSON 输出适配、JSON 截断精简重试、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 任务级退避重试、超时任务恢复 |
-| Web | 登录、改密、Inbox、阅读建议、Markdown 阅读/源码视图、初始问卷、评测开关、阅读后反馈和校准统计 | AI 差异解释、忽略内容抽检 |
+| Web | 登录、改密、插件 Key 管理、Inbox、阅读建议、Markdown 阅读/源码视图、初始问卷、评测开关、阅读后反馈和校准统计 | AI 差异解释、忽略内容抽检 |
 | 部署 | Dockerfile、Compose、Nginx 示例 | 当前开发机未安装 Docker，容器尚未实机验证 |
 
 ## 系统结构
@@ -30,7 +30,7 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 SignalLens Extension（PageSift 提取核心）
   ↓  signallens.capture.v1
 FastAPI
-  ├─ admin_users / auth_sessions
+  ├─ admin_users / auth_sessions / plugin_api_key
   ├─ contents
   ├─ analyses
   └─ analysis_jobs
@@ -117,7 +117,7 @@ uv run --project apps/api signallens-api
 data/initial-admin-password.txt
 ```
 
-该文件已被 Git 忽略。使用初始密码登录 Web 后会进入“账户安全”页；修改密码成功会撤销 Web 与插件的全部旧会话，并自动删除该初始密码文件。
+该文件已被 Git 忽略。使用初始密码登录 Web 后会进入“账户安全”页；修改密码成功会撤销全部 Web 会话，并自动删除该初始密码文件。插件使用独立 Key，不保存 admin 密码。
 
 修改后端代码后需要停止并重新启动，因为当前启动入口没有开启自动重载。
 
@@ -162,10 +162,10 @@ npm run build --workspace @signallens/extension
 保持本地后端和 Web 运行：
 
 1. 打开一篇普通 HTTP/HTTPS 文章；
-2. 打开 SignalLens 插件，使用修改后的 `admin` 密码登录；
-3. 检查标题、字数、提取质量和 Markdown 预览；
-4. 点击“提交 AI 分析”；
-5. 返回 <http://localhost:5173/inbox>。
+2. 在 Web 的“账户安全”页生成并复制插件 Key；
+3. 打开 SignalLens 插件，粘贴并保存 Key；
+4. 检查标题、字数、提取质量和 Markdown 预览；
+5. 点击“提交 AI 分析”，再返回 <http://localhost:5173/inbox>。
 
 Inbox 最迟约 5 秒自动刷新，也可以手动刷新页面。点击内容卡片可以查看原网页入口和提取后的完整 Markdown。
 
@@ -200,8 +200,11 @@ data/signallens.db
 | `GET` | `/api/v1/health` | 健康检查 |
 | `POST` | `/api/v1/auth/login` | 使用 admin 密码登录 |
 | `GET` | `/api/v1/auth/me` | 获取当前登录账户状态 |
-| `POST` | `/api/v1/auth/change-password` | 修改密码并撤销全部旧会话 |
+| `POST` | `/api/v1/auth/change-password` | 修改密码并撤销全部 Web 会话 |
 | `POST` | `/api/v1/auth/logout` | 撤销当前设备会话 |
+| `GET` | `/api/v1/plugin-key` | 获取插件 Key 的非敏感状态 |
+| `POST` | `/api/v1/plugin-key` | 生成并替换唯一插件 Key |
+| `DELETE` | `/api/v1/plugin-key` | 撤销插件 Key |
 | `POST` | `/api/v1/captures` | 保存或更新一次内容采集 |
 | `GET` | `/api/v1/contents` | 获取最近内容及最新分析状态 |
 | `GET` | `/api/v1/contents/{content_id}` | 获取 Markdown 和完整分析字段 |
@@ -212,7 +215,7 @@ data/signallens.db
 | `PUT` | `/api/v1/analyses/{analysis_id}/feedback` | 新增或更新阅读后评价 |
 | `GET` | `/api/v1/calibration/stats` | 获取推荐偏差和摘要问题统计 |
 
-除健康检查和登录外，所有 `/api/v1` 接口都必须发送 `Authorization: Bearer <token>`。Docker 部署时初始密码位于 API 容器挂载卷的 `/data/initial-admin-password.txt`，可用以下命令读取：
+除健康检查和登录外，所有 `/api/v1` 接口都必须发送 `Authorization: Bearer <token>`。Web 使用登录会话；插件使用形如 `sk-sl-...` 的独立 Key，而且该 Key 只允许调用 `POST /api/v1/captures`。重新生成 Key 会立即使旧值失效，数据库仅保存哈希。Docker 部署时初始密码位于 API 容器挂载卷的 `/data/initial-admin-password.txt`，可用以下命令读取：
 
 ```bash
 docker compose exec api cat /data/initial-admin-password.txt

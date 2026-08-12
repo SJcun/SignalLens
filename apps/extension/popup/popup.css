@@ -10,13 +10,13 @@ button, a { font: inherit; }
 .topbar span, .meta span, .analysis-result span { color: #8e9aaa; font-size: 12px; }
 .icon-button { width: 32px; height: 32px; color: #dfe7f1; background: #161e28; border: 1px solid #2b3745; border-radius: 9px; cursor: pointer; }
 .text-button { padding: 6px 8px; color: #8e9aaa; background: transparent; border: 0; }
-.login-panel { display: grid; gap: 7px; padding: 22px 18px; }
-.login-panel > span, .login-panel label { color: #8e9aaa; font-size: 12px; }
-.login-panel form { display: grid; gap: 12px; margin-top: 12px; }
-.login-panel label { display: grid; gap: 6px; }
-.login-panel input { width: 100%; padding: 10px 11px; color: #e9edf4; background: #080c11; border: 1px solid #2a3542; border-radius: 8px; outline: none; }
-.login-panel input:focus { border-color: #5e9b7f; }
-.login-error { margin: 0; color: #ffb3ad; font-size: 12px; }
+.key-panel { display: grid; gap: 7px; padding: 22px 18px; }
+.key-panel > span, .key-panel label { color: #8e9aaa; font-size: 12px; }
+.key-panel form { display: grid; gap: 12px; margin-top: 12px; }
+.key-panel label { display: grid; gap: 6px; }
+.key-panel input { width: 100%; padding: 10px 11px; color: #e9edf4; background: #080c11; border: 1px solid #2a3542; border-radius: 8px; outline: none; }
+.key-panel input:focus { border-color: #5e9b7f; }
+.key-error { margin: 0; color: #ffb3ad; font-size: 12px; }
 .status { margin: 14px 16px; padding: 12px; color: #cdd6e1; background: #151d27; border-radius: 10px; }
 .status.error { color: #ffb3ad; background: #351b1b; }
 .meta { display: grid; gap: 7px; padding: 14px 16px 0; }

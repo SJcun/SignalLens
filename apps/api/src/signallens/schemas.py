@@ -234,3 +234,25 @@ class MessageResponse(BaseModel):
     """无需额外业务字段的操作结果。"""
 
     message: str
+
+
+class PluginKeyStatusResponse(BaseModel):
+    """Web 账户页可见的插件 Key 状态，不返回密钥明文。"""
+
+    configured: bool
+    key_prefix: str | None = None
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+    _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
+    _normalize_last_used_at = field_validator("last_used_at", mode="before")(attach_utc)
+
+
+class GeneratedPluginKeyResponse(BaseModel):
+    """生成时唯一一次返回完整插件 Key。"""
+
+    api_key: str
+    key_prefix: str
+    created_at: datetime
+
+    _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)

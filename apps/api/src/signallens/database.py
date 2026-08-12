@@ -48,11 +48,12 @@ def create_schema() -> None:
         ArticleFeedback,
         AuthSession,
         Content,
+        PluginApiKey,
         UserProfileRecord,
     )
 
     # 这些模型虽未参与下方迁移逻辑，但必须在 create_all 前导入并注册元数据。
-    _ = (AdminUser, ArticleFeedback, AuthSession, UserProfileRecord)
+    _ = (AdminUser, ArticleFeedback, AuthSession, PluginApiKey, UserProfileRecord)
 
     Base.metadata.create_all(engine)
     with SessionLocal.begin() as session:

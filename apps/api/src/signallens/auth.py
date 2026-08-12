@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
-from .models import AdminUser, AuthSession, utc_now
+from .models import AdminUser, AuthSession, PluginApiKey, utc_now
 from .settings import get_settings
 
 LOGGER = logging.getLogger("signallens.auth")
@@ -73,6 +73,34 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def create_plugin_key(session: Session) -> tuple[str, PluginApiKey]:
+    """生成新的插件 Key；单用户阶段始终替换此前的 Key。"""
+
+    raw_key = f"sk-sl-{secrets.token_urlsafe(32)}"
+    record = session.get(PluginApiKey, "default")
+    if record is None:
+        record = PluginApiKey(id="default", key_hash="", key_prefix="")
+        session.add(record)
+    record.key_hash = token_hash(raw_key)
+    record.key_prefix = raw_key[:14]
+    record.created_at = utc_now()
+    record.last_used_at = None
+    return raw_key, record
+
+
+def load_plugin_key(session: Session, raw_key: str) -> PluginApiKey | None:
+    """校验插件 Key，并记录最近一次成功提交时间。"""
+
+    if not raw_key.startswith("sk-sl-"):
+        return None
+    record = session.scalar(
+        select(PluginApiKey).where(PluginApiKey.key_hash == token_hash(raw_key))
+    )
+    if record is not None:
+        record.last_used_at = utc_now()
+    return record
+
+
 def create_session(session: Session, user: AdminUser) -> tuple[str, AuthSession]:
     """签发随机 Bearer 令牌并保存可撤销的服务端会话。"""
 
@@ -106,7 +134,7 @@ def load_session(session: Session, raw_token: str) -> tuple[AdminUser, AuthSessi
 
 
 def revoke_user_sessions(session: Session, user_id: str) -> None:
-    """撤销指定账号的全部 Web 与插件会话。"""
+    """撤销指定账号的全部 Web 会话，不影响独立插件 Key。"""
 
     session.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
 
