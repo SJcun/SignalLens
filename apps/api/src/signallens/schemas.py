@@ -195,3 +195,42 @@ class HealthResponse(BaseModel):
 
     status: Literal["ok"]
     service: Literal["signallens-api"]
+
+
+class LoginRequest(BaseModel):
+    """管理员账号密码登录请求。"""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class LoginResponse(BaseModel):
+    """供 Web 和插件保存的 Bearer 会话。"""
+
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    username: str
+    must_change_password: bool
+    expires_at: datetime
+
+    _normalize_expires_at = field_validator("expires_at", mode="before")(attach_utc)
+
+
+class CurrentUserResponse(BaseModel):
+    """当前登录账户的公开状态。"""
+
+    username: str
+    must_change_password: bool
+
+
+class ChangePasswordRequest(BaseModel):
+    """登录后修改管理员密码。"""
+
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class MessageResponse(BaseModel):
+    """无需额外业务字段的操作结果。"""
+
+    message: str

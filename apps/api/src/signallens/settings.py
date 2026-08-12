@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,8 @@ class Settings(BaseSettings):
     env: str = "development"
     database_url: str = "sqlite:///./data/signallens.db"
     web_origin: str = "http://localhost:5173"
+    bootstrap_password_file: str = "./data/initial-admin-password.txt"
+    session_days: int = Field(default=30, ge=1, le=365)
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = ""

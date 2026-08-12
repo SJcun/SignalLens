@@ -15,11 +15,11 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 
 | 模块 | 已实现 | 尚未实现 |
 | --- | --- | --- |
-| 浏览器插件 | 网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、提交本地后端 | 插件 Token、分析结果摘要 |
-| 后端 API | 内容采集与去重、分析状态、显式用户画像、人工反馈快照、校准统计、结构化结果校验 | 用户鉴权、画像修改建议 |
+| 浏览器插件 | 登录/退出、网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、鉴权提交 | 分析结果摘要 |
+| 后端 API | 单用户登录与改密、可撤销会话、内容采集与去重、分析状态、显式用户画像、人工反馈快照、校准统计 | 画像修改建议 |
 | 数据层 | SQLite、WAL、内容/分析/任务持久化、已有重复数据迁移 | 正式 Alembic 迁移体系 |
 | Worker | OpenAI/DeepSeek JSON 输出适配、JSON 截断精简重试、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 任务级退避重试、超时任务恢复 |
-| Web | Inbox、阅读建议、Markdown 阅读/源码视图、初始问卷、评测开关、阅读后反馈和校准统计 | AI 差异解释、忽略内容抽检 |
+| Web | 登录、改密、Inbox、阅读建议、Markdown 阅读/源码视图、初始问卷、评测开关、阅读后反馈和校准统计 | AI 差异解释、忽略内容抽检 |
 | 部署 | Dockerfile、Compose、Nginx 示例 | 当前开发机未安装 Docker，容器尚未实机验证 |
 
 ## 系统结构
@@ -30,6 +30,7 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 SignalLens Extension（PageSift 提取核心）
   ↓  signallens.capture.v1
 FastAPI
+  ├─ admin_users / auth_sessions
   ├─ contents
   ├─ analyses
   └─ analysis_jobs
@@ -110,6 +111,14 @@ uv run --project apps/api signallens-api
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/api/v1/health>
 
+首次启动会创建唯一账户 `admin`，随机初始密码位于：
+
+```text
+data/initial-admin-password.txt
+```
+
+该文件已被 Git 忽略。使用初始密码登录 Web 后会进入“账户安全”页；修改密码成功会撤销 Web 与插件的全部旧会话，并自动删除该初始密码文件。
+
 修改后端代码后需要停止并重新启动，因为当前启动入口没有开启自动重载。
 
 ### 2. 启动 Web
@@ -121,7 +130,7 @@ cd E:\Code\Git\SignalLens
 npm run dev --workspace @signallens/web
 ```
 
-打开 <http://localhost:5173/inbox>。页面右上角出现“API 已连接”表示本地前后端已连通。
+打开 <http://localhost:5173>，使用 `admin` 和初始密码登录。页面右上角出现“API 已连接”表示本地前后端已连通。
 
 ### 3. 构建并加载插件
 
@@ -153,7 +162,7 @@ npm run build --workspace @signallens/extension
 保持本地后端和 Web 运行：
 
 1. 打开一篇普通 HTTP/HTTPS 文章；
-2. 打开 SignalLens 插件；
+2. 打开 SignalLens 插件，使用修改后的 `admin` 密码登录；
 3. 检查标题、字数、提取质量和 Markdown 预览；
 4. 点击“提交 AI 分析”；
 5. 返回 <http://localhost:5173/inbox>。
@@ -189,6 +198,10 @@ data/signallens.db
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET` | `/api/v1/health` | 健康检查 |
+| `POST` | `/api/v1/auth/login` | 使用 admin 密码登录 |
+| `GET` | `/api/v1/auth/me` | 获取当前登录账户状态 |
+| `POST` | `/api/v1/auth/change-password` | 修改密码并撤销全部旧会话 |
+| `POST` | `/api/v1/auth/logout` | 撤销当前设备会话 |
 | `POST` | `/api/v1/captures` | 保存或更新一次内容采集 |
 | `GET` | `/api/v1/contents` | 获取最近内容及最新分析状态 |
 | `GET` | `/api/v1/contents/{content_id}` | 获取 Markdown 和完整分析字段 |
@@ -198,6 +211,14 @@ data/signallens.db
 | `PUT` | `/api/v1/profile` | 保存显式用户画像 |
 | `PUT` | `/api/v1/analyses/{analysis_id}/feedback` | 新增或更新阅读后评价 |
 | `GET` | `/api/v1/calibration/stats` | 获取推荐偏差和摘要问题统计 |
+
+除健康检查和登录外，所有 `/api/v1` 接口都必须发送 `Authorization: Bearer <token>`。Docker 部署时初始密码位于 API 容器挂载卷的 `/data/initial-admin-password.txt`，可用以下命令读取：
+
+```bash
+docker compose exec api cat /data/initial-admin-password.txt
+```
+
+生产环境必须通过 HTTPS 暴露 Web/API，不能把 API 的 `8000` 端口直接开放到公网；登录接口的限流应在正式 Nginx 配置中启用。当前 `deploy/` 仍是 HTTP 示例，部署前需要完成证书和限流配置。
 
 ## 测试与构建
 

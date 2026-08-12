@@ -4,23 +4,47 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .database import create_schema, get_session
-from .models import Analysis, AnalysisJob, ArticleFeedback, Content, UserProfileRecord, utc_now
+from .auth import (
+    create_session,
+    ensure_initial_admin,
+    hash_password,
+    load_session,
+    remove_bootstrap_password_file,
+    revoke_user_sessions,
+    verify_password,
+)
+from .database import SessionLocal, create_schema, get_session
+from .models import (
+    AdminUser,
+    Analysis,
+    AnalysisJob,
+    ArticleFeedback,
+    AuthSession,
+    Content,
+    UserProfileRecord,
+    utc_now,
+)
 from .schemas import (
     AnalysisResponse,
     CalibrationStatsResponse,
     CaptureAccepted,
     CaptureRequest,
+    ChangePasswordRequest,
     ContentDetailResponse,
     ContentSummaryResponse,
+    CurrentUserResponse,
     FeedbackResponse,
     FeedbackUpsert,
     HealthResponse,
+    LoginRequest,
+    LoginResponse,
+    MessageResponse,
     ProfileResponse,
     ProfileUpdate,
 )
@@ -30,9 +54,10 @@ from .urls import normalize_content_url
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """启动时准备开发数据库结构。"""
+    """启动时准备数据库结构和唯一初始管理员。"""
 
     create_schema()
+    ensure_initial_admin()
     yield
 
 
@@ -46,12 +71,118 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PUBLIC_API_PATHS = {"/api/v1/health", "/api/v1/auth/login"}
+
+
+@app.middleware("http")
+async def require_api_authentication(request: Request, call_next):
+    """统一保护业务 API，避免新增接口时遗漏鉴权依赖。"""
+
+    path = request.url.path.rstrip("/") or "/"
+    needs_auth = (
+        path.startswith("/api/v1")
+        and path not in PUBLIC_API_PATHS
+        and request.method != "OPTIONS"
+    )
+    if not needs_auth:
+        return await call_next(request)
+
+    authorization = request.headers.get("Authorization", "")
+    scheme, separator, raw_token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not raw_token:
+        return _unauthorized_response()
+
+    with SessionLocal() as session:
+        authenticated = load_session(session, raw_token)
+        if authenticated is None:
+            return _unauthorized_response()
+        user, auth_session = authenticated
+        # 请求只携带后续端点需要的稳定标识，不跨数据库会话传递 ORM 对象。
+        request.state.auth_user_id = user.id
+        request.state.auth_username = user.username
+        request.state.must_change_password = user.must_change_password
+        request.state.auth_session_id = auth_session.id
+    return await call_next(request)
+
 
 @app.get("/api/v1/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """返回无需鉴权的存活状态。"""
 
     return HealthResponse(status="ok", service="signallens-api")
+
+
+@app.post("/api/v1/auth/login", response_model=LoginResponse)
+def login(
+    payload: LoginRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> LoginResponse:
+    """使用唯一管理员账号登录并签发可撤销会话。"""
+
+    user = session.scalar(select(AdminUser).where(AdminUser.username == payload.username.strip()))
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    raw_token, auth_session = create_session(session, user)
+    session.commit()
+    return LoginResponse(
+        access_token=raw_token,
+        username=user.username,
+        must_change_password=user.must_change_password,
+        expires_at=auth_session.expires_at,
+    )
+
+
+@app.get("/api/v1/auth/me", response_model=CurrentUserResponse)
+def current_user(request: Request) -> CurrentUserResponse:
+    """返回当前令牌对应的管理员状态。"""
+
+    return CurrentUserResponse(
+        username=request.state.auth_username,
+        must_change_password=request.state.must_change_password,
+    )
+
+
+@app.post("/api/v1/auth/logout", response_model=MessageResponse)
+def logout(
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+) -> MessageResponse:
+    """只撤销当前设备的会话。"""
+
+    auth_session = session.get(AuthSession, request.state.auth_session_id)
+    if auth_session is not None:
+        session.delete(auth_session)
+        session.commit()
+    return MessageResponse(message="已退出登录")
+
+
+@app.post("/api/v1/auth/change-password", response_model=MessageResponse)
+def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    session: Annotated[Session, Depends(get_session)],
+) -> MessageResponse:
+    """修改管理员密码，并撤销 Web 与插件的全部旧会话。"""
+
+    user = session.get(AdminUser, request.state.auth_user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="登录账户不存在")
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if verify_password(payload.new_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+
+    user.password_hash = hash_password(payload.new_password)
+    user.must_change_password = False
+    user.password_changed_at = utc_now()
+    revoke_user_sessions(session, user.id)
+    session.commit()
+    remove_bootstrap_password_file()
+    return MessageResponse(message="密码已修改，请重新登录")
 
 
 @app.get("/api/v1/profile", response_model=ProfileResponse)
@@ -443,6 +574,16 @@ def _feedback_response(feedback: ArticleFeedback) -> FeedbackResponse:
         model=feedback.model,
         prompt_version=feedback.prompt_version,
         updated_at=feedback.updated_at,
+    )
+
+
+def _unauthorized_response() -> JSONResponse:
+    """构造 Web 与插件都能统一识别的未登录响应。"""
+
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"detail": "未登录或登录已过期"},
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
 

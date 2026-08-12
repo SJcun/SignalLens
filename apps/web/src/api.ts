@@ -1,6 +1,21 @@
+import { authenticatedFetch, clearAccessToken } from './auth'
+
 export interface HealthResponse {
   status: 'ok'
   service: 'signallens-api'
+}
+
+export interface LoginResult {
+  access_token: string
+  token_type: 'bearer'
+  username: string
+  must_change_password: boolean
+  expires_at: string
+}
+
+export interface CurrentUser {
+  username: string
+  must_change_password: boolean
 }
 
 export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
@@ -141,21 +156,63 @@ export async function getHealth(): Promise<HealthResponse> {
   return apiResponse<HealthResponse>(response)
 }
 
+/** 使用管理员账号登录；令牌由调用页面确认后保存。 */
+export async function login(username: string, password: string): Promise<LoginResult> {
+  const response = await fetch('/api/v1/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  return apiResponse<LoginResult>(response)
+}
+
+/** 获取当前账户及是否仍使用初始密码。 */
+export async function getCurrentUser(): Promise<CurrentUser> {
+  const response = await authenticatedFetch('/api/v1/auth/me')
+  return apiResponse<CurrentUser>(response)
+}
+
+/** 修改密码后服务端会撤销所有设备的旧令牌。 */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const response = await authenticatedFetch('/api/v1/auth/change-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+  await apiResponse<{ message: string }>(response)
+  clearAccessToken()
+}
+
+/** 撤销当前 Web 会话；网络失败时也清除本地令牌。 */
+export async function logout(): Promise<void> {
+  try {
+    const response = await authenticatedFetch('/api/v1/auth/logout', { method: 'POST' })
+    await apiResponse<{ message: string }>(response)
+  } catch {
+    // 后端暂时不可用时仍允许用户清除本地会话并返回登录页。
+  } finally {
+    clearAccessToken()
+  }
+}
+
 /** 获取最近采集的内容及最新分析状态。 */
 export async function getContents(): Promise<ContentSummary[]> {
-  const response = await fetch('/api/v1/contents')
+  const response = await authenticatedFetch('/api/v1/contents')
   return apiResponse<ContentSummary[]>(response)
 }
 
 /** 获取单篇内容的原始 Markdown 与完整分析结果。 */
 export async function getContent(contentId: string): Promise<ContentDetail> {
-  const response = await fetch(`/api/v1/contents/${encodeURIComponent(contentId)}`)
+  const response = await authenticatedFetch(`/api/v1/contents/${encodeURIComponent(contentId)}`)
   return apiResponse<ContentDetail>(response)
 }
 
 /** 将失败的分析清空阶段结果后重新放回 Worker 队列。 */
 export async function retryAnalysis(analysisId: string): Promise<CaptureAccepted> {
-  const response = await fetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/retry`, {
+  const response = await authenticatedFetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/retry`, {
     method: 'POST',
   })
   return apiResponse<CaptureAccepted>(response)
@@ -163,13 +220,13 @@ export async function retryAnalysis(analysisId: string): Promise<CaptureAccepted
 
 /** 获取初始问卷和当前评测模式。 */
 export async function getProfile(): Promise<UserProfile> {
-  const response = await fetch('/api/v1/profile')
+  const response = await authenticatedFetch('/api/v1/profile')
   return apiResponse<UserProfile>(response)
 }
 
 /** 保存用户明确填写的画像，不从行为中自动推断。 */
 export async function updateProfile(profile: ProfileUpdate): Promise<UserProfile> {
-  const response = await fetch('/api/v1/profile', {
+  const response = await authenticatedFetch('/api/v1/profile', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(profile),
@@ -182,7 +239,7 @@ export async function saveFeedback(
   analysisId: string,
   feedback: FeedbackUpdate,
 ): Promise<ArticleFeedback> {
-  const response = await fetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/feedback`, {
+  const response = await authenticatedFetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/feedback`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(feedback),
@@ -192,6 +249,6 @@ export async function saveFeedback(
 
 /** 获取评测模式积累的基础校准指标。 */
 export async function getCalibrationStats(): Promise<CalibrationStats> {
-  const response = await fetch('/api/v1/calibration/stats')
+  const response = await authenticatedFetch('/api/v1/calibration/stats')
   return apiResponse<CalibrationStats>(response)
 }

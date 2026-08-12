@@ -50,6 +50,15 @@ const state: PopupState = {
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T
 const el = {
+  loginPanel: $('login-panel'),
+  loginForm: $<HTMLFormElement>('login-form'),
+  loginUsername: $<HTMLInputElement>('login-username'),
+  loginPassword: $<HTMLInputElement>('login-password'),
+  loginSubmit: $<HTMLButtonElement>('login-submit'),
+  loginError: $('login-error'),
+  pluginContent: $('plugin-content'),
+  authSummary: $('auth-summary'),
+  logout: $<HTMLButtonElement>('logout'),
   status: $('status'),
   meta: $('meta'),
   metaTitle: $('meta-title'),
@@ -87,6 +96,78 @@ function setStatus(text: string, isError = false): void {
   el.status.textContent = text
   el.status.classList.toggle('error', isError)
   el.status.classList.remove('hidden')
+}
+
+/** 显示插件登录表单，并隐藏所有采集操作。 */
+function showLogin(error = ''): void {
+  el.pluginContent.classList.add('hidden')
+  el.authSummary.classList.add('hidden')
+  el.logout.classList.add('hidden')
+  el.reconvert.classList.add('hidden')
+  el.loginPanel.classList.remove('hidden')
+  el.loginError.textContent = error
+  el.loginError.classList.toggle('hidden', !error)
+  el.loginPassword.value = ''
+}
+
+/** 登录成功后展示账户状态，并开始提取当前网页。 */
+function showAuthenticated(username: string, mustChangePassword: boolean): void {
+  el.loginPanel.classList.add('hidden')
+  el.pluginContent.classList.remove('hidden')
+  el.authSummary.textContent = mustChangePassword ? `${username} · 请改密` : username
+  el.authSummary.classList.remove('hidden')
+  el.logout.classList.remove('hidden')
+  el.reconvert.classList.remove('hidden')
+  void convert()
+}
+
+/** 提交插件登录表单，密码只发送给后端，不写入扩展存储。 */
+async function submitLogin(): Promise<void> {
+  el.loginSubmit.disabled = true
+  el.loginError.classList.add('hidden')
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'LOGIN',
+      username: el.loginUsername.value.trim(),
+      password: el.loginPassword.value,
+    }) as {
+      ok: boolean
+      error?: string
+      username?: string
+      mustChangePassword?: boolean
+    }
+    if (!response.ok) {
+      showLogin(response.error || '登录失败')
+      return
+    }
+    showAuthenticated(response.username || 'admin', Boolean(response.mustChangePassword))
+  } catch (error) {
+    showLogin((error as Error).message)
+  } finally {
+    el.loginSubmit.disabled = false
+  }
+}
+
+/** 打开 Popup 时向后端确认扩展中保存的会话。 */
+async function initialize(): Promise<void> {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'AUTH_STATUS' }) as {
+      ok: boolean
+      authenticated: boolean
+      error?: string
+      username?: string
+      mustChangePassword?: boolean
+    }
+    if (!response.ok) {
+      showLogin(response.error || '暂时无法连接 SignalLens')
+    } else if (response.authenticated) {
+      showAuthenticated(response.username || 'admin', Boolean(response.mustChangePassword))
+    } else {
+      showLogin()
+    }
+  } catch (error) {
+    showLogin((error as Error).message)
+  }
 }
 
 /** 把内容脚本返回结果写入 Popup 状态与预览区。 */
@@ -185,9 +266,13 @@ async function submitAnalysis(): Promise<void> {
       warnings: state.warnings,
       engine: state.engineId,
     }),
-  }) as { ok: boolean; error?: string; contentId?: string }
+  }) as { ok: boolean; error?: string; contentId?: string; authRequired?: boolean }
   el.analyze.disabled = false
   if (!response.ok) {
+    if (response.authRequired) {
+      showLogin(response.error)
+      return
+    }
     setStatus(response.error || '提交失败', true)
     return
   }
@@ -251,6 +336,13 @@ async function openPreview(): Promise<void> {
 }
 
 el.analyze.addEventListener('click', () => void submitAnalysis())
+el.loginForm.addEventListener('submit', (event) => {
+  event.preventDefault()
+  void submitLogin()
+})
+el.logout.addEventListener('click', () => {
+  void chrome.runtime.sendMessage({ type: 'LOGOUT' }).finally(() => showLogin())
+})
 el.copy.addEventListener('click', () => void copyMarkdown())
 el.download.addEventListener('click', downloadMarkdown)
 el.downloadJson.addEventListener('click', downloadJson)
@@ -260,4 +352,4 @@ el.fullpage.addEventListener('click', () => void convert('fullpage'))
 el.selection.addEventListener('click', () => void convert('selection'))
 el.manual.addEventListener('click', () => void convert('manual'))
 
-void convert()
+void initialize()

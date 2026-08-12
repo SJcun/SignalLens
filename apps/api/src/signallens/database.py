@@ -41,10 +41,18 @@ def get_session() -> Generator[Session, None, None]:
 def create_schema() -> None:
     """创建开发期数据表，并补齐现有内容的唯一身份。"""
 
-    from .models import Analysis, AnalysisJob, ArticleFeedback, Content, UserProfileRecord
+    from .models import (
+        AdminUser,
+        Analysis,
+        AnalysisJob,
+        ArticleFeedback,
+        AuthSession,
+        Content,
+        UserProfileRecord,
+    )
 
     # 这些模型虽未参与下方迁移逻辑，但必须在 create_all 前导入并注册元数据。
-    _ = (ArticleFeedback, UserProfileRecord)
+    _ = (AdminUser, ArticleFeedback, AuthSession, UserProfileRecord)
 
     Base.metadata.create_all(engine)
     with SessionLocal.begin() as session:

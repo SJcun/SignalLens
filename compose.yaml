@@ -5,6 +5,8 @@ services:
     environment:
       SIGNALLENS_DATABASE_URL: sqlite:////data/signallens.db
       SIGNALLENS_WEB_ORIGIN: https://lens.example.com
+      SIGNALLENS_BOOTSTRAP_PASSWORD_FILE: /data/initial-admin-password.txt
+      SIGNALLENS_SESSION_DAYS: ${SIGNALLENS_SESSION_DAYS:-30}
       SIGNALLENS_LLM_BASE_URL: ${SIGNALLENS_LLM_BASE_URL:-https://api.openai.com/v1}
       SIGNALLENS_LLM_API_KEY: ${SIGNALLENS_LLM_API_KEY:-}
       SIGNALLENS_LLM_MODEL: ${SIGNALLENS_LLM_MODEL:-}

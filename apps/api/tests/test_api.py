@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 
 TEST_DB = Path(__file__).with_name("test.db")
+TEST_BOOTSTRAP = Path(__file__).with_name("initial-admin-password.txt")
 os.environ["SIGNALLENS_DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
+os.environ["SIGNALLENS_BOOTSTRAP_PASSWORD_FILE"] = str(TEST_BOOTSTRAP)
 
 from fastapi.testclient import TestClient
 
@@ -110,6 +112,25 @@ def test_health_and_idempotent_capture() -> None:
 
     with TestClient(app) as client:
         assert client.get("/api/v1/health").json()["status"] == "ok"
+        assert client.get("/api/v1/profile").status_code == 401
+        initial_password = next(
+            line.removeprefix("password=")
+            for line in TEST_BOOTSTRAP.read_text(encoding="utf-8").splitlines()
+            if line.startswith("password=")
+        )
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "错误密码"},
+        ).status_code == 401
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": initial_password},
+        )
+        assert login.status_code == 200
+        assert login.json()["must_change_password"] is True
+        client.headers.update({"Authorization": f"Bearer {login.json()['access_token']}"})
+        assert client.get("/api/v1/auth/me").json()["username"] == "admin"
+
         empty_profile = client.get("/api/v1/profile")
         assert empty_profile.status_code == 200
         assert empty_profile.json()["questionnaire_completed"] is False
@@ -246,6 +267,29 @@ def test_health_and_idempotent_capture() -> None:
         assert completed_retry.json()["status"] == "completed"
         assert process_next_job(FakeProvider()) is False
 
+        changed = client.post(
+            "/api/v1/auth/change-password",
+            json={
+                "current_password": initial_password,
+                "new_password": "new-test-password-2026",
+            },
+        )
+        assert changed.status_code == 200
+        assert not TEST_BOOTSTRAP.exists()
+        assert client.get("/api/v1/profile").status_code == 401
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": initial_password},
+        ).status_code == 401
+        new_login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "new-test-password-2026"},
+        )
+        assert new_login.status_code == 200
+        client.headers.update({"Authorization": f"Bearer {new_login.json()['access_token']}"})
+        assert client.post("/api/v1/auth/logout").status_code == 200
+        assert client.get("/api/v1/profile").status_code == 401
+
 
 def teardown_module() -> None:
     """删除测试产生的临时 SQLite 文件。"""
@@ -256,3 +300,5 @@ def teardown_module() -> None:
         path = Path(f"{TEST_DB}{suffix}")
         if path.exists():
             path.unlink()
+    TEST_BOOTSTRAP.unlink(missing_ok=True)
+    TEST_BOOTSTRAP.with_suffix(".txt.tmp").unlink(missing_ok=True)
