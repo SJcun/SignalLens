@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { getContent, retryAnalysis } from '../api'
+import { renderMarkdown } from '../markdown'
 
 const recommendationText = {
   ignore: '可以忽略',
@@ -28,6 +30,7 @@ const statusText = {
 const route = useRoute()
 const contentId = String(route.params.contentId)
 const queryClient = useQueryClient()
+const showMarkdownSource = ref(false)
 const content = useQuery({
   queryKey: ['content', contentId],
   queryFn: () => getContent(contentId),
@@ -44,6 +47,10 @@ const retry = useMutation({
       queryClient.invalidateQueries({ queryKey: ['contents'] }),
     ])
   },
+})
+const renderedMarkdown = computed(() => {
+  const data = content.data.value
+  return data ? renderMarkdown(data.markdown, data.source_url) : ''
 })
 </script>
 
@@ -162,8 +169,14 @@ const retry = useMutation({
       </article>
 
       <article class="detail-section">
-        <h2>提取后的 Markdown</h2>
-        <pre class="markdown-source">{{ content.data.value.markdown }}</pre>
+        <div class="section-heading">
+          <h2>正文</h2>
+          <button class="view-toggle" type="button" @click="showMarkdownSource = !showMarkdownSource">
+            {{ showMarkdownSource ? '阅读模式' : '查看源码' }}
+          </button>
+        </div>
+        <pre v-if="showMarkdownSource" class="markdown-source">{{ content.data.value.markdown }}</pre>
+        <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
       </article>
     </template>
   </section>
