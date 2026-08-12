@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
+artifacts/
 
 # Python 虚拟环境、缓存与测试产物
 .venv/
@@ -28,4 +29,3 @@ data/*
 .vscode/
 .DS_Store
 Thumbs.db
-
