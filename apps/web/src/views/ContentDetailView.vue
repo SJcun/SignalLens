@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useQuery } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRoute } from 'vue-router'
 
-import { getContent } from '../api'
+import { getContent, retryAnalysis } from '../api'
 
 const recommendationText = {
   ignore: '可以忽略',
@@ -27,10 +27,23 @@ const statusText = {
 
 const route = useRoute()
 const contentId = String(route.params.contentId)
+const queryClient = useQueryClient()
 const content = useQuery({
   queryKey: ['content', contentId],
   queryFn: () => getContent(contentId),
-  refetchInterval: (query) => query.state.data?.analysis_status === 'completed' ? false : 5000,
+  refetchInterval: (query) => {
+    const status = query.state.data?.analysis_status
+    return status === 'pending' || status === 'running' ? 5000 : false
+  },
+})
+const retry = useMutation({
+  mutationFn: () => retryAnalysis(content.data.value!.analysis_id),
+  onSuccess: async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['content', contentId] }),
+      queryClient.invalidateQueries({ queryKey: ['contents'] }),
+    ])
+  },
 })
 </script>
 
@@ -62,7 +75,11 @@ const content = useQuery({
         AI 正在分诊和分析这篇内容，页面会自动刷新。
       </div>
       <div v-else-if="content.data.value.analysis_status === 'failed'" class="pending-notice error-panel">
-        本次分析失败，原始正文仍已安全保存。
+        <span>本次分析失败，原始正文仍已安全保存。</span>
+        <button class="retry-button" :disabled="retry.isPending.value" @click="retry.mutate()">
+          {{ retry.isPending.value ? '正在重新提交…' : '重新分析' }}
+        </button>
+        <span v-if="retry.isError.value">{{ retry.error.value?.message }}</span>
       </div>
 
       <article v-if="content.data.value.personal_evaluation" class="result-hero">

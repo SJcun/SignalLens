@@ -192,6 +192,8 @@ def run() -> None:
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         model=settings.llm_model,
+        response_format_mode=settings.llm_response_format,
+        max_tokens=settings.llm_max_tokens,
     )
     while True:
         if not process_next_job(provider):

@@ -69,6 +69,13 @@ export interface ContentDetail extends ContentSummary {
   personal_evaluation: PersonalEvaluationResult | null
 }
 
+export interface CaptureAccepted {
+  content_id: string
+  analysis_id: string
+  status: AnalysisStatus
+  detail_url: string
+}
+
 /** 统一处理非成功响应，保留后端给出的可读错误。 */
 async function apiResponse<T>(response: Response): Promise<T> {
   if (response.ok) return response.json() as Promise<T>
@@ -92,4 +99,12 @@ export async function getContents(): Promise<ContentSummary[]> {
 export async function getContent(contentId: string): Promise<ContentDetail> {
   const response = await fetch(`/api/v1/contents/${encodeURIComponent(contentId)}`)
   return apiResponse<ContentDetail>(response)
+}
+
+/** 将失败的分析清空阶段结果后重新放回 Worker 队列。 */
+export async function retryAnalysis(analysisId: string): Promise<CaptureAccepted> {
+  const response = await fetch(`/api/v1/analyses/${encodeURIComponent(analysisId)}/retry`, {
+    method: 'POST',
+  })
+  return apiResponse<CaptureAccepted>(response)
 }

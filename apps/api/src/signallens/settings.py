@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = ""
+    llm_response_format: str = "auto"
+    llm_max_tokens: int = 8192
 
     model_config = SettingsConfigDict(
         env_file=".env",

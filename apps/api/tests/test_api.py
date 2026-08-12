@@ -72,6 +72,17 @@ class FakeProvider:
         raise AssertionError(f"未处理的输出模型：{output_model}")
 
 
+class FailingProvider:
+    """模拟模型服务拒绝请求，用于验证失败任务重试。"""
+
+    model = "failing-test-model"
+
+    def complete(self, *, system_prompt, user_prompt, output_model):
+        """始终返回可诊断的模型错误。"""
+
+        raise RuntimeError("模拟模型接口错误")
+
+
 def capture_payload() -> dict:
     """构造来自网页插件的有效采集请求。"""
 
@@ -132,6 +143,26 @@ def test_health_and_idempotent_capture() -> None:
         assert completed.json()["triage"]["decision"] == "continue"
         assert completed.json()["one_sentence_summary"] == "文章介绍了一个值得验证的新方法。"
         assert completed.json()["recommendation"] == "selective_read"
+        completed_retry_attempt = client.post(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/retry"
+        )
+        assert completed_retry_attempt.status_code == 409
+
+        failed_payload = capture_payload()
+        failed_payload["capture_id"] = "capture-test-failed"
+        failed_payload["source"]["url"] = "https://example.com/failed-article"
+        failed = client.post("/api/v1/captures", json=failed_payload)
+        assert failed.status_code == 202
+        assert process_next_job(FailingProvider()) is True
+        failed_analysis = client.get(f"/api/v1/analyses/{failed.json()['analysis_id']}")
+        assert failed_analysis.json()["status"] == "failed"
+
+        retried = client.post(f"/api/v1/analyses/{failed.json()['analysis_id']}/retry")
+        assert retried.status_code == 202
+        assert retried.json()["status"] == "pending"
+        assert process_next_job(FakeProvider()) is True
+        completed_retry = client.get(f"/api/v1/analyses/{failed.json()['analysis_id']}")
+        assert completed_retry.json()["status"] == "completed"
         assert process_next_job(FakeProvider()) is False
 
 

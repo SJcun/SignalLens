@@ -53,6 +53,8 @@ p { color: #a7b1bf; line-height: 1.7; }
 .detail-meta { margin: 20px 0 28px; }
 .detail-meta a { color: var(--accent); }
 .pending-notice { margin-bottom: 18px; padding: 13px 15px; color: #f0c987; background: #2a2116; border: 1px solid #55401f; border-radius: 10px; }
+.retry-button { margin-left: 12px; padding: 7px 11px; color: #07120d; background: var(--accent); border: 0; border-radius: 8px; cursor: pointer; }
+.retry-button:disabled { cursor: wait; opacity: .65; }
 .result-hero { margin-bottom: 18px; padding: 28px; background: linear-gradient(135deg, #14271f, #121821 65%); border: 1px solid #2d634c; border-radius: 16px; }
 .result-hero h2 { margin: 8px 0; font-size: 28px; }
 .result-hero p { margin-bottom: 0; }

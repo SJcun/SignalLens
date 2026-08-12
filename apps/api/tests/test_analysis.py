@@ -52,6 +52,7 @@ def test_openai_compatible_provider_validates_structured_output() -> None:
         assert request.url.path == "/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer test-key"
         assert body["response_format"]["json_schema"]["name"] == "TriageContent"
+        assert body["max_tokens"] == 8192
         result = {
             "relevance": "medium",
             "intrinsic_signal": "high",
@@ -76,6 +77,43 @@ def test_openai_compatible_provider_validates_structured_output() -> None:
     )
     result = provider.complete(
         system_prompt="system",
+        user_prompt="user",
+        output_model=TriageContent,
+    )
+    assert result.decision == "continue"
+
+
+def test_deepseek_uses_json_object_with_schema_in_prompt() -> None:
+    """DeepSeek 自动降级为 JSON Output，并在 Prompt 中携带完整契约。"""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert request.url.path == "/chat/completions"
+        assert body["response_format"] == {"type": "json_object"}
+        assert '"required"' in body["messages"][0]["content"]
+        result = {
+            "relevance": "medium",
+            "intrinsic_signal": "high",
+            "novelty_signal": "unknown",
+            "exploration_value": "medium",
+            "discovery_type": "adjacent",
+            "decision": "continue",
+            "reason": "值得继续分析",
+            "why_outside_profile": None,
+        }
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(result)}}]},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-v4-flash",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    result = provider.complete(
+        system_prompt="输出 JSON",
         user_prompt="user",
         output_model=TriageContent,
     )
@@ -111,6 +149,29 @@ def test_openai_compatible_provider_rejects_invalid_json() -> None:
         client=httpx.Client(transport=transport),
     )
     with pytest.raises(AnalysisProviderError, match="模型未返回有效的 TriageContent"):
+        provider.complete(
+            system_prompt="system",
+            user_prompt="user",
+            output_model=TriageContent,
+        )
+
+
+def test_provider_preserves_http_error_body() -> None:
+    """HTTP 参数错误应包含服务端正文，便于直接定位不兼容字段。"""
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            400,
+            json={"error": {"message": "response_format.type is invalid"}},
+        )
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://llm.example/v1",
+        api_key="test-key",
+        model="test-model",
+        client=httpx.Client(transport=transport),
+    )
+    with pytest.raises(AnalysisProviderError, match="response_format.type is invalid"):
         provider.complete(
             system_prompt="system",
             user_prompt="user",

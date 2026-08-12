@@ -18,8 +18,8 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 | 浏览器插件 | 网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、提交本地后端 | 插件 Token、分析结果摘要 |
 | 后端 API | 健康检查、内容采集、URL 去重、内容列表、内容详情、分析状态查询、结构化结果校验 | 用户鉴权、反馈、画像、统计接口 |
 | 数据层 | SQLite、WAL、内容/分析/任务持久化、已有重复数据迁移 | 正式 Alembic 迁移体系 |
-| Worker | OpenAI-compatible Provider、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 自动重试、超时任务恢复、人工重跑 |
-| Web | Inbox、分析状态轮询、阅读建议、摘要、关键点、阅读计划和原始 Markdown | 偏好编辑、反馈和统计数据 |
+| Worker | OpenAI/DeepSeek JSON 输出适配、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 自动重试、超时任务恢复 |
+| Web | Inbox、分析状态轮询、失败重跑、阅读建议、摘要、关键点、阅读计划和原始 Markdown | 偏好编辑、反馈和统计数据 |
 | 部署 | Dockerfile、Compose、Nginx 示例 | 当前开发机未安装 Docker，容器尚未实机验证 |
 
 ## 系统结构
@@ -90,9 +90,11 @@ Copy-Item .env.example .env
 SIGNALLENS_LLM_BASE_URL=https://api.openai.com/v1
 SIGNALLENS_LLM_API_KEY=你的密钥
 SIGNALLENS_LLM_MODEL=支持结构化输出的模型名称
+SIGNALLENS_LLM_RESPONSE_FORMAT=auto
+SIGNALLENS_LLM_MAX_TOKENS=8192
 ```
 
-当前 Provider 使用 OpenAI Chat Completions 的 `json_schema` 结构化输出。其他兼容服务必须同时支持该请求格式。
+`auto` 会为 `api.deepseek.com` 使用 `json_object`，其他服务默认使用严格 `json_schema`。如果通过自建代理连接 DeepSeek，可以显式设置 `SIGNALLENS_LLM_RESPONSE_FORMAT=json_object`。两种模式的返回结果都会经过同一套 Pydantic 契约校验。
 
 ## 本地运行
 
@@ -191,6 +193,7 @@ data/signallens.db
 | `GET` | `/api/v1/contents` | 获取最近内容及最新分析状态 |
 | `GET` | `/api/v1/contents/{content_id}` | 获取 Markdown 和完整分析字段 |
 | `GET` | `/api/v1/analyses/{analysis_id}` | 查询分析任务状态 |
+| `POST` | `/api/v1/analyses/{analysis_id}/retry` | 重新执行失败的分析任务 |
 
 ## 测试与构建
 
@@ -227,7 +230,7 @@ Worker 会按创建时间领取待处理任务，并依次执行：
 2. `AnalyzeContent`：只分析文章本身，保留反方观点、限制和未验证主张；
 3. `EvaluateForUser`：生成阅读动作和阅读计划。
 
-模型输出必须通过 Pydantic/JSON Schema 校验。单条任务失败会标记为 `failed`，不会丢失原始正文，也不会终止 Worker。手动提交的有效内容不会被快速分诊静默拦截。偏好持久化尚未实现，因此当前 `EvaluateForUser` 使用空画像做保守评估，不能视为已经完成真正的个性化。
+模型输出必须通过 Pydantic/JSON Schema 校验。单条任务失败会标记为 `failed`，不会丢失原始正文，也不会终止 Worker；内容详情页可以将失败任务重新放回队列。手动提交的有效内容不会被快速分诊静默拦截。偏好持久化尚未实现，因此当前 `EvaluateForUser` 使用空画像做保守评估，不能视为已经完成真正的个性化。
 
 ## 下一阶段
 
@@ -237,6 +240,6 @@ Worker 会按创建时间领取待处理任务，并依次执行：
 2. 人工验证低相关高价值内容、知识点新颖性和观点保真度；
 3. 根据评测结果调整 Prompt 并提升 Prompt 版本；
 4. 实现偏好编辑和用户画像持久化，使 `EvaluateForUser` 真正个性化；
-5. 增加失败任务重跑、反馈和统计闭环。
+5. 增加反馈和统计闭环。
 
 V0.1 暂不实现 PDF、音视频、RSS、RAG、向量数据库、知识图谱和复杂推荐算法。

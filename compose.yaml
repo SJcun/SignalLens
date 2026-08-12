@@ -8,6 +8,8 @@ services:
       SIGNALLENS_LLM_BASE_URL: ${SIGNALLENS_LLM_BASE_URL:-https://api.openai.com/v1}
       SIGNALLENS_LLM_API_KEY: ${SIGNALLENS_LLM_API_KEY:-}
       SIGNALLENS_LLM_MODEL: ${SIGNALLENS_LLM_MODEL:-}
+      SIGNALLENS_LLM_RESPONSE_FORMAT: ${SIGNALLENS_LLM_RESPONSE_FORMAT:-auto}
+      SIGNALLENS_LLM_MAX_TOKENS: ${SIGNALLENS_LLM_MAX_TOKENS:-8192}
     volumes:
       - signallens-data:/data
     restart: unless-stopped
@@ -20,6 +22,8 @@ services:
       SIGNALLENS_LLM_BASE_URL: ${SIGNALLENS_LLM_BASE_URL:-https://api.openai.com/v1}
       SIGNALLENS_LLM_API_KEY: ${SIGNALLENS_LLM_API_KEY:-}
       SIGNALLENS_LLM_MODEL: ${SIGNALLENS_LLM_MODEL:-}
+      SIGNALLENS_LLM_RESPONSE_FORMAT: ${SIGNALLENS_LLM_RESPONSE_FORMAT:-auto}
+      SIGNALLENS_LLM_MAX_TOKENS: ${SIGNALLENS_LLM_MAX_TOKENS:-8192}
     volumes:
       - signallens-data:/data
     restart: unless-stopped
@@ -34,4 +38,3 @@ services:
 
 volumes:
   signallens-data:
-

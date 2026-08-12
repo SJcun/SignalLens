@@ -121,16 +121,45 @@ def get_analysis(
     analysis = session.get(Analysis, analysis_id)
     if analysis is None:
         raise HTTPException(status_code=404, detail="分析任务不存在")
-    return AnalysisResponse(
-        id=analysis.id,
-        content_id=analysis.content_id,
-        status=analysis.status,
-        triage=analysis.triage_json,
-        content_analysis=analysis.content_analysis_json,
-        personal_evaluation=analysis.personal_evaluation_json,
-        created_at=analysis.created_at,
-        completed_at=analysis.completed_at,
-    )
+    return _analysis_response(analysis)
+
+
+@app.post(
+    "/api/v1/analyses/{analysis_id}/retry",
+    response_model=CaptureAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_analysis(
+    analysis_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> CaptureAccepted:
+    """清理失败阶段结果，并把原分析任务重新放回待处理队列。"""
+
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="分析任务不存在")
+    if analysis.status != "failed":
+        raise HTTPException(status_code=409, detail="只有失败的分析任务可以重新执行")
+
+    job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis.id))
+    content = session.get(Content, analysis.content_id)
+    if job is None or content is None:
+        raise HTTPException(status_code=409, detail="分析任务关联数据缺失")
+
+    # 失败时可能已经保存了前序阶段；重跑必须从同一内容快照完整开始，
+    # 防止新 Prompt 与旧阶段结果混用。
+    analysis.status = "pending"
+    analysis.triage_json = None
+    analysis.content_analysis_json = None
+    analysis.personal_evaluation_json = None
+    analysis.model = None
+    analysis.prompt_version = "unimplemented"
+    analysis.completed_at = None
+    job.stage = "triage"
+    job.status = "pending"
+    job.last_error = None
+    session.commit()
+    return _accepted(content, analysis)
 
 
 @app.get("/api/v1/contents", response_model=list[ContentSummaryResponse])
@@ -217,6 +246,21 @@ def _accepted(content: Content, analysis: Analysis) -> CaptureAccepted:
         analysis_id=analysis.id,
         status=analysis.status,
         detail_url=f"/contents/{content.id}",
+    )
+
+
+def _analysis_response(analysis: Analysis) -> AnalysisResponse:
+    """统一构造分析状态响应并触发结构化结果校验。"""
+
+    return AnalysisResponse(
+        id=analysis.id,
+        content_id=analysis.content_id,
+        status=analysis.status,
+        triage=analysis.triage_json,
+        content_analysis=analysis.content_analysis_json,
+        personal_evaluation=analysis.personal_evaluation_json,
+        created_at=analysis.created_at,
+        completed_at=analysis.completed_at,
     )
 
 
