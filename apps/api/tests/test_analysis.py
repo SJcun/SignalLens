@@ -52,7 +52,7 @@ def test_openai_compatible_provider_validates_structured_output() -> None:
         assert request.url.path == "/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer test-key"
         assert body["response_format"]["json_schema"]["name"] == "TriageContent"
-        assert body["max_tokens"] == 8192
+        assert body["max_tokens"] == 16384
         result = {
             "relevance": "medium",
             "intrinsic_signal": "high",
@@ -90,6 +90,7 @@ def test_deepseek_uses_json_object_with_schema_in_prompt() -> None:
         body = json.loads(request.content)
         assert request.url.path == "/chat/completions"
         assert body["response_format"] == {"type": "json_object"}
+        assert body["thinking"] == {"type": "disabled"}
         assert '"required"' in body["messages"][0]["content"]
         result = {
             "relevance": "medium",
@@ -120,6 +121,63 @@ def test_deepseek_uses_json_object_with_schema_in_prompt() -> None:
     assert result.decision == "continue"
 
 
+def test_deepseek_retries_truncated_json_with_compact_instruction() -> None:
+    """DeepSeek 达到输出上限时应自动精简重试一次。"""
+
+    request_count = 0
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        body = json.loads(request.content)
+        if request_count == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": '{"reason":"被截断'},
+                        }
+                    ]
+                },
+            )
+
+        assert "上一次 JSON 输出被截断" in body["messages"][0]["content"]
+        result = {
+            "relevance": "medium",
+            "intrinsic_signal": "high",
+            "novelty_signal": "unknown",
+            "exploration_value": "medium",
+            "discovery_type": "adjacent",
+            "decision": "continue",
+            "reason": "精简后的有效结果",
+            "why_outside_profile": None,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": json.dumps(result)}}
+                ]
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-v4-flash",
+        client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    result = provider.complete(
+        system_prompt="输出 JSON",
+        user_prompt="user",
+        output_model=TriageContent,
+    )
+    assert request_count == 2
+    assert result.reason == "精简后的有效结果"
+
+
 def test_output_schema_meets_strict_json_schema_requirements() -> None:
     """严格输出中的每个对象都必须禁止额外字段且声明全部属性为必填。"""
 
@@ -131,6 +189,10 @@ def test_output_schema_meets_strict_json_schema_requirements() -> None:
                 continue
             assert value["additionalProperties"] is False
             assert set(value["required"]) == set(value["properties"])
+
+    analyze_schema = AnalyzeContent.model_json_schema()
+    assert analyze_schema["properties"]["summary"]["maxLength"] == 1600
+    assert analyze_schema["properties"]["content_map"]["maxItems"] == 10
 
 
 def test_openai_compatible_provider_rejects_invalid_json() -> None:

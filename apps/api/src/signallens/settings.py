@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     llm_response_format: str = "auto"
-    llm_max_tokens: int = 8192
+    llm_max_tokens: int = 16384
 
     model_config = SettingsConfigDict(
         env_file=".env",

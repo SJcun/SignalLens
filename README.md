@@ -18,7 +18,7 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 | 浏览器插件 | 网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、提交本地后端 | 插件 Token、分析结果摘要 |
 | 后端 API | 健康检查、内容采集、URL 去重、内容列表、内容详情、分析状态查询、结构化结果校验 | 用户鉴权、反馈、画像、统计接口 |
 | 数据层 | SQLite、WAL、内容/分析/任务持久化、已有重复数据迁移 | 正式 Alembic 迁移体系 |
-| Worker | OpenAI/DeepSeek JSON 输出适配、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 自动重试、超时任务恢复 |
+| Worker | OpenAI/DeepSeek JSON 输出适配、JSON 截断精简重试、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 任务级退避重试、超时任务恢复 |
 | Web | Inbox、分析状态轮询、失败重跑、阅读建议、摘要、关键点、阅读计划和原始 Markdown | 偏好编辑、反馈和统计数据 |
 | 部署 | Dockerfile、Compose、Nginx 示例 | 当前开发机未安装 Docker，容器尚未实机验证 |
 
@@ -91,10 +91,10 @@ SIGNALLENS_LLM_BASE_URL=https://api.openai.com/v1
 SIGNALLENS_LLM_API_KEY=你的密钥
 SIGNALLENS_LLM_MODEL=支持结构化输出的模型名称
 SIGNALLENS_LLM_RESPONSE_FORMAT=auto
-SIGNALLENS_LLM_MAX_TOKENS=8192
+SIGNALLENS_LLM_MAX_TOKENS=16384
 ```
 
-`auto` 会为 `api.deepseek.com` 使用 `json_object`，其他服务默认使用严格 `json_schema`。如果通过自建代理连接 DeepSeek，可以显式设置 `SIGNALLENS_LLM_RESPONSE_FORMAT=json_object`。两种模式的返回结果都会经过同一套 Pydantic 契约校验。
+`auto` 会为 `api.deepseek.com` 使用非思考模式的 `json_object`，其他服务默认使用严格 `json_schema`。如果通过自建代理连接 DeepSeek，可以显式设置 `SIGNALLENS_LLM_RESPONSE_FORMAT=json_object`。两种模式的返回结果都会经过同一套 Pydantic 契约校验；遇到截断或无效 JSON 时会自动用精简指令重试一次。
 
 ## 本地运行
 

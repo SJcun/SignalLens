@@ -1,6 +1,6 @@
 """三阶段 AI 阅读分诊的结构化输出契约。"""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -8,6 +8,9 @@ SignalLevel = Literal["low", "medium", "high"]
 RelevanceLevel = Literal["low", "medium", "high", "very_high"]
 DiscoveryType = Literal["profile_match", "adjacent", "outside_profile_high_value"]
 Recommendation = Literal["ignore", "summary_enough", "selective_read", "deep_read"]
+ShortText = Annotated[str, Field(min_length=1, max_length=240)]
+CompactText = Annotated[str, Field(min_length=1, max_length=400)]
+SummaryText = Annotated[str, Field(min_length=1, max_length=1600)]
 
 
 class StrictOutputModel(BaseModel):
@@ -25,8 +28,8 @@ class TriageContent(StrictOutputModel):
     exploration_value: SignalLevel
     discovery_type: DiscoveryType
     decision: Literal["ignore", "continue"]
-    reason: str = Field(min_length=1)
-    why_outside_profile: str | None
+    reason: CompactText
+    why_outside_profile: CompactText | None
 
     @model_validator(mode="after")
     def validate_ignore_decision(self) -> "TriageContent":
@@ -44,50 +47,50 @@ class TriageContent(StrictOutputModel):
 class ContentProfile(StrictOutputModel):
     """文章自身的主题、类型和理解门槛。"""
 
-    topics: list[str]
-    content_type: str
+    topics: list[ShortText] = Field(max_length=8)
+    content_type: ShortText
     difficulty: Literal["introductory", "intermediate", "advanced"]
 
 
 class ContentSection(StrictOutputModel):
     """文章中可独立定位和阅读的章节。"""
 
-    title: str
-    summary: str
+    title: ShortText
+    summary: CompactText
 
 
 class ContentClaim(StrictOutputModel):
     """文章提出的主要主张及原文证据状态。"""
 
-    claim: str
-    evidence: list[str]
+    claim: CompactText
+    evidence: list[CompactText] = Field(max_length=4)
     verification: Literal["supported_in_content", "unverified", "opinion"]
 
 
 class AnalyzeContent(StrictOutputModel):
     """不读取完整用户画像的内容本体分析结果。"""
 
-    one_sentence_summary: str = Field(min_length=1)
-    summary: str = Field(min_length=1)
+    one_sentence_summary: ShortText
+    summary: SummaryText
     content_profile: ContentProfile
-    content_map: list[ContentSection]
-    key_points: list[str]
-    claims: list[ContentClaim]
-    thesis: str | None
-    supporting_evidence: list[str]
-    counterarguments: list[str]
-    author_stance: str | None
-    limitations: list[str]
-    unresolved_questions: list[str]
-    unverified_claims: list[str]
+    content_map: list[ContentSection] = Field(max_length=10)
+    key_points: list[CompactText] = Field(max_length=10)
+    claims: list[ContentClaim] = Field(max_length=8)
+    thesis: SummaryText | None
+    supporting_evidence: list[CompactText] = Field(max_length=8)
+    counterarguments: list[CompactText] = Field(max_length=6)
+    author_stance: CompactText | None
+    limitations: list[CompactText] = Field(max_length=6)
+    unresolved_questions: list[CompactText] = Field(max_length=6)
+    unverified_claims: list[CompactText] = Field(max_length=6)
 
 
 class ReadingPlanItem(StrictOutputModel):
     """针对某个章节给出的具体阅读动作。"""
 
-    section: str
+    section: ShortText
     action: Literal["skip", "skim", "read", "deep_read"]
-    reason: str
+    reason: CompactText
 
 
 class EvaluateForUser(StrictOutputModel):
@@ -96,14 +99,14 @@ class EvaluateForUser(StrictOutputModel):
     relevance: RelevanceLevel
     knowledge_overlap: SignalLevel
     known_or_redundant: bool
-    novel_information: list[str]
+    novel_information: list[CompactText] = Field(max_length=8)
     exploration_value: SignalLevel
     perspective_diversity: SignalLevel
     discovery_type: DiscoveryType
     recommendation: Recommendation
-    recommendation_reason: str = Field(min_length=1)
-    why_outside_profile: str | None
-    reading_plan: list[ReadingPlanItem]
+    recommendation_reason: SummaryText
+    why_outside_profile: CompactText | None
+    reading_plan: list[ReadingPlanItem] = Field(max_length=8)
 
     @model_validator(mode="after")
     def validate_exploration_recommendation(self) -> "EvaluateForUser":
