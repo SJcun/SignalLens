@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
+from .analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
+
 
 def attach_utc(value: datetime | None) -> datetime | None:
     """SQLite 返回无时区时间时，将其按数据库约定解释为 UTC。"""
@@ -74,9 +76,9 @@ class AnalysisResponse(BaseModel):
     id: str
     content_id: str
     status: Literal["pending", "running", "completed", "failed"]
-    triage: dict | None
-    content_analysis: dict | None
-    personal_evaluation: dict | None
+    triage: TriageContent | None
+    content_analysis: AnalyzeContent | None
+    personal_evaluation: EvaluateForUser | None
     created_at: datetime
     completed_at: datetime | None
 
@@ -107,9 +109,9 @@ class ContentDetailResponse(ContentSummaryResponse):
     """内容详情页需要的原文快照与完整分析结果。"""
 
     markdown: str
-    triage: dict | None
-    content_analysis: dict | None
-    personal_evaluation: dict | None
+    triage: TriageContent | None
+    content_analysis: AnalyzeContent | None
+    personal_evaluation: EvaluateForUser | None
 
 
 class HealthResponse(BaseModel):

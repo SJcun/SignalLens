@@ -8,8 +8,68 @@ os.environ["SIGNALLENS_DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 
 from fastapi.testclient import TestClient
 
+from signallens.analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
 from signallens.database import engine
 from signallens.main import app
+from signallens.worker import process_next_job
+
+
+class FakeProvider:
+    """为 Worker 回归测试提供确定性的三阶段结构化结果。"""
+
+    model = "fake-test-model"
+
+    def complete(self, *, system_prompt, user_prompt, output_model):
+        """按输出模型类型返回最小有效结果。"""
+
+        if output_model is TriageContent:
+            return TriageContent(
+                relevance="low",
+                intrinsic_signal="low",
+                novelty_signal="unknown",
+                exploration_value="low",
+                discovery_type="profile_match",
+                decision="ignore",
+                reason="测试模型的快速判断",
+                why_outside_profile=None,
+            )
+        if output_model is AnalyzeContent:
+            return AnalyzeContent(
+                one_sentence_summary="文章介绍了一个值得验证的新方法。",
+                summary="这是一段用于回归测试的内容分析。",
+                content_profile={
+                    "topics": ["测试"],
+                    "content_type": "技术文章",
+                    "difficulty": "introductory",
+                },
+                content_map=[],
+                key_points=["关键点一"],
+                claims=[],
+                thesis=None,
+                supporting_evidence=[],
+                counterarguments=[],
+                author_stance=None,
+                limitations=[],
+                unresolved_questions=[],
+                unverified_claims=[],
+            )
+        if output_model is EvaluateForUser:
+            return EvaluateForUser(
+                relevance="medium",
+                knowledge_overlap="low",
+                known_or_redundant=False,
+                novel_information=["关键点一"],
+                exploration_value="medium",
+                perspective_diversity="medium",
+                discovery_type="adjacent",
+                recommendation="selective_read",
+                recommendation_reason="包含一项可快速验证的新信息",
+                why_outside_profile=None,
+                reading_plan=[
+                    {"section": "关键点一", "action": "read", "reason": "验证新方法"}
+                ],
+            )
+        raise AssertionError(f"未处理的输出模型：{output_model}")
 
 
 def capture_payload() -> dict:
@@ -63,6 +123,16 @@ def test_health_and_idempotent_capture() -> None:
         detail = client.get(f"/api/v1/contents/{first.json()['content_id']}")
         assert detail.status_code == 200
         assert detail.json()["markdown"] == "# 测试\n\n更新后的正文。"
+
+        # 即使测试模型建议忽略，手动采集仍必须继续完成三阶段分析。
+        assert process_next_job(FakeProvider()) is True
+        completed = client.get(f"/api/v1/contents/{first.json()['content_id']}")
+        assert completed.status_code == 200
+        assert completed.json()["analysis_status"] == "completed"
+        assert completed.json()["triage"]["decision"] == "continue"
+        assert completed.json()["one_sentence_summary"] == "文章介绍了一个值得验证的新方法。"
+        assert completed.json()["recommendation"] == "selective_read"
+        assert process_next_job(FakeProvider()) is False
 
 
 def teardown_module() -> None:

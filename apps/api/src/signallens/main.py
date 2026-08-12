@@ -202,7 +202,9 @@ def _content_summary(content: Content, analysis: Analysis) -> ContentSummaryResp
         analysis_id=analysis.id,
         analysis_status=analysis.status,
         one_sentence_summary=content_analysis.get("one_sentence_summary"),
-        recommendation=personal_evaluation.get("recommendation"),
+        recommendation=personal_evaluation.get("recommendation") or (
+            "ignore" if triage.get("decision") == "ignore" else None
+        ),
         discovery_type=personal_evaluation.get("discovery_type") or triage.get("discovery_type"),
     )
 

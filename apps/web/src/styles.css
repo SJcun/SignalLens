@@ -53,8 +53,24 @@ p { color: #a7b1bf; line-height: 1.7; }
 .detail-meta { margin: 20px 0 28px; }
 .detail-meta a { color: var(--accent); }
 .pending-notice { margin-bottom: 18px; padding: 13px 15px; color: #f0c987; background: #2a2116; border: 1px solid #55401f; border-radius: 10px; }
-.detail-section { padding: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
+.result-hero { margin-bottom: 18px; padding: 28px; background: linear-gradient(135deg, #14271f, #121821 65%); border: 1px solid #2d634c; border-radius: 16px; }
+.result-hero h2 { margin: 8px 0; font-size: 28px; }
+.result-hero p { margin-bottom: 0; }
+.explore-callout { padding: 12px 14px; color: #c8bcff; background: #1c1930; border-radius: 10px; }
+.detail-section { margin-bottom: 18px; padding: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
 .detail-section h2 { margin-top: 0; }
+.result-section { display: grid; gap: 22px; }
+.summary-lead { margin: 0; color: #e9edf4; font-size: 20px; line-height: 1.55; }
+.result-block { padding-top: 20px; border-top: 1px solid var(--line); }
+.result-block ul, .evidence-grid ul { display: grid; gap: 9px; margin-bottom: 0; padding-left: 20px; color: #b8c2cf; line-height: 1.6; }
+.reading-plan { display: grid; gap: 10px; }
+.reading-plan-item { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; padding: 14px; background: #0d131b; border: 1px solid var(--line); border-radius: 10px; }
+.reading-plan-item span { padding: 3px 7px; color: #07120d; background: var(--accent); border-radius: 6px; font-size: 12px; }
+.reading-plan-item strong { align-self: center; }
+.reading-plan-item p { grid-column: 2; margin: 0; }
+.evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.evidence-grid > div { padding: 18px; background: #0d131b; border: 1px solid var(--line); border-radius: 10px; }
+.evidence-grid h2 { font-size: 15px; }
 .markdown-source { max-height: 65vh; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; color: #b8c2cf; background: #080c11; border-radius: 10px; font: 13px/1.7 Consolas, monospace; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 34px; }
 .metric-grid article { display: grid; gap: 10px; padding: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }

@@ -1,0 +1,126 @@
+"""三阶段 AI 阅读分诊的结构化输出契约。"""
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+SignalLevel = Literal["low", "medium", "high"]
+RelevanceLevel = Literal["low", "medium", "high", "very_high"]
+DiscoveryType = Literal["profile_match", "adjacent", "outside_profile_high_value"]
+Recommendation = Literal["ignore", "summary_enough", "selective_read", "deep_read"]
+
+
+class StrictOutputModel(BaseModel):
+    """禁止额外字段，使生成的 JSON Schema 可用于严格结构化输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TriageContent(StrictOutputModel):
+    """快速判断内容是否值得继续投入分析资源。"""
+
+    relevance: RelevanceLevel
+    intrinsic_signal: SignalLevel
+    novelty_signal: Literal["low", "medium", "high", "unknown"]
+    exploration_value: SignalLevel
+    discovery_type: DiscoveryType
+    decision: Literal["ignore", "continue"]
+    reason: str = Field(min_length=1)
+    why_outside_profile: str | None
+
+    @model_validator(mode="after")
+    def validate_ignore_decision(self) -> "TriageContent":
+        """禁止仅因相关性低而忽略仍有内容或探索价值的文章。"""
+
+        if self.decision == "ignore" and (
+            self.intrinsic_signal != "low" or self.exploration_value != "low"
+        ):
+            raise ValueError("只有内容信号和探索价值都低时才允许忽略")
+        if self.discovery_type == "outside_profile_high_value" and not self.why_outside_profile:
+            raise ValueError("画像外高价值内容必须说明探索价值")
+        return self
+
+
+class ContentProfile(StrictOutputModel):
+    """文章自身的主题、类型和理解门槛。"""
+
+    topics: list[str]
+    content_type: str
+    difficulty: Literal["introductory", "intermediate", "advanced"]
+
+
+class ContentSection(StrictOutputModel):
+    """文章中可独立定位和阅读的章节。"""
+
+    title: str
+    summary: str
+
+
+class ContentClaim(StrictOutputModel):
+    """文章提出的主要主张及原文证据状态。"""
+
+    claim: str
+    evidence: list[str]
+    verification: Literal["supported_in_content", "unverified", "opinion"]
+
+
+class AnalyzeContent(StrictOutputModel):
+    """不读取完整用户画像的内容本体分析结果。"""
+
+    one_sentence_summary: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    content_profile: ContentProfile
+    content_map: list[ContentSection]
+    key_points: list[str]
+    claims: list[ContentClaim]
+    thesis: str | None
+    supporting_evidence: list[str]
+    counterarguments: list[str]
+    author_stance: str | None
+    limitations: list[str]
+    unresolved_questions: list[str]
+    unverified_claims: list[str]
+
+
+class ReadingPlanItem(StrictOutputModel):
+    """针对某个章节给出的具体阅读动作。"""
+
+    section: str
+    action: Literal["skip", "skim", "read", "deep_read"]
+    reason: str
+
+
+class EvaluateForUser(StrictOutputModel):
+    """结合用户简要画像生成最终阅读建议。"""
+
+    relevance: RelevanceLevel
+    knowledge_overlap: SignalLevel
+    known_or_redundant: bool
+    novel_information: list[str]
+    exploration_value: SignalLevel
+    perspective_diversity: SignalLevel
+    discovery_type: DiscoveryType
+    recommendation: Recommendation
+    recommendation_reason: str = Field(min_length=1)
+    why_outside_profile: str | None
+    reading_plan: list[ReadingPlanItem]
+
+    @model_validator(mode="after")
+    def validate_exploration_recommendation(self) -> "EvaluateForUser":
+        """保护低相关但高探索价值的内容，不允许直接建议忽略。"""
+
+        if (
+            self.exploration_value == "high"
+            and self.recommendation == "ignore"
+        ):
+            raise ValueError("高探索价值内容不能建议忽略")
+        if self.discovery_type == "outside_profile_high_value" and not self.why_outside_profile:
+            raise ValueError("画像外高价值内容必须解释推荐原因")
+        return self
+
+
+class UserProfile(BaseModel):
+    """V0.1 分析使用的最小用户画像，暂不包含行为推断。"""
+
+    focus_topics: list[str] = Field(default_factory=list)
+    known_topics: list[str] = Field(default_factory=list)

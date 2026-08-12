@@ -1,2 +1,5 @@
-"""三阶段 AI 分析模块；具体 Prompt 将由评测阶段驱动实现。"""
+"""三阶段 AI 阅读分诊模块。"""
 
+from .schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
+
+__all__ = ["AnalyzeContent", "EvaluateForUser", "TriageContent", "UserProfile"]

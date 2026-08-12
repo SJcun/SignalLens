@@ -4,6 +4,48 @@ export interface HealthResponse {
 }
 
 export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type Recommendation = 'ignore' | 'summary_enough' | 'selective_read' | 'deep_read'
+
+export interface TriageResult {
+  relevance: 'low' | 'medium' | 'high' | 'very_high'
+  intrinsic_signal: 'low' | 'medium' | 'high'
+  novelty_signal: 'low' | 'medium' | 'high' | 'unknown'
+  exploration_value: 'low' | 'medium' | 'high'
+  discovery_type: 'profile_match' | 'adjacent' | 'outside_profile_high_value'
+  decision: 'ignore' | 'continue'
+  reason: string
+  why_outside_profile: string | null
+}
+
+export interface ContentAnalysisResult {
+  one_sentence_summary: string
+  summary: string
+  key_points: string[]
+  counterarguments: string[]
+  limitations: string[]
+  unresolved_questions: string[]
+  unverified_claims: string[]
+}
+
+export interface ReadingPlanItem {
+  section: string
+  action: 'skip' | 'skim' | 'read' | 'deep_read'
+  reason: string
+}
+
+export interface PersonalEvaluationResult {
+  relevance: 'low' | 'medium' | 'high' | 'very_high'
+  knowledge_overlap: 'low' | 'medium' | 'high'
+  known_or_redundant: boolean
+  novel_information: string[]
+  exploration_value: 'low' | 'medium' | 'high'
+  perspective_diversity: 'low' | 'medium' | 'high'
+  discovery_type: 'profile_match' | 'adjacent' | 'outside_profile_high_value'
+  recommendation: Recommendation
+  recommendation_reason: string
+  why_outside_profile: string | null
+  reading_plan: ReadingPlanItem[]
+}
 
 export interface ContentSummary {
   id: string
@@ -22,9 +64,9 @@ export interface ContentSummary {
 
 export interface ContentDetail extends ContentSummary {
   markdown: string
-  triage: Record<string, unknown> | null
-  content_analysis: Record<string, unknown> | null
-  personal_evaluation: Record<string, unknown> | null
+  triage: TriageResult | null
+  content_analysis: ContentAnalysisResult | null
+  personal_evaluation: PersonalEvaluationResult | null
 }
 
 /** 统一处理非成功响应，保留后端给出的可读错误。 */
