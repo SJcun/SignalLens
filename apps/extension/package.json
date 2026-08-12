@@ -1,0 +1,27 @@
+{
+  "name": "@signallens/extension",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SignalLens 网页采集与 AI 分析浏览器插件",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node test/smoke.test.mjs",
+    "test": "npm run build && node test/smoke.test.mjs && node tests/orchestrator.test.mjs && node tests/export.test.mjs"
+  },
+  "dependencies": {
+    "defuddle": "^0.19.2",
+    "dompurify": "^3.4.13",
+    "marked": "^18.0.9",
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.6",
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.0"
+  }
+}
+

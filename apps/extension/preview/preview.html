@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="preview.css" />
+  <title>文章提取器 · 预览</title>
+</head>
+<body>
+  <header class="top">
+    <div class="headline">
+      <h1 id="title">加载中…</h1>
+      <div id="meta" class="muted"></div>
+      <div class="badges">
+        <span id="quality" class="quality hidden"></span>
+        <span id="engine" class="engine hidden"></span>
+      </div>
+      <ul id="warnings" class="warnings hidden"></ul>
+    </div>
+    <div class="actions">
+      <button id="copy" class="btn">复制 Markdown</button>
+      <button id="download" class="btn primary">下载 .md 文件</button>
+      <button id="download-json" class="btn">下载 JSON</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button id="tab-rendered" class="tab active">渲染预览</button>
+    <button id="tab-source" class="tab">Markdown 源码</button>
+  </nav>
+
+  <main>
+    <div id="rendered" class="panel active"></div>
+    <pre id="source" class="panel source hidden"></pre>
+  </main>
+
+  <script src="../dist/preview.js"></script>
+</body>
+</html>

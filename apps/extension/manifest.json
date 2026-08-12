@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "SignalLens",
+  "version": "0.1.0",
+  "description": "提取当前网页并提交到 SignalLens 进行 AI 阅读分诊。",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "clipboardWrite",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://lens.example.com/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "dist/service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "SignalLens"
+  }
+}

@@ -1,0 +1,28 @@
+:root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", sans-serif; color: #e9edf4; background: #0c1118; }
+* { box-sizing: border-box; }
+body { width: 420px; margin: 0; }
+button, a { font: inherit; }
+.hidden { display: none !important; }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; border-bottom: 1px solid #26303c; }
+.topbar div { display: grid; gap: 2px; }
+.topbar strong { font-size: 17px; }
+.topbar span, .meta span, .analysis-result span { color: #8e9aaa; font-size: 12px; }
+.icon-button { width: 32px; height: 32px; color: #dfe7f1; background: #161e28; border: 1px solid #2b3745; border-radius: 9px; cursor: pointer; }
+.status { margin: 14px 16px; padding: 12px; color: #cdd6e1; background: #151d27; border-radius: 10px; }
+.status.error { color: #ffb3ad; background: #351b1b; }
+.meta { display: grid; gap: 7px; padding: 14px 16px 0; }
+.quality { width: fit-content; padding: 4px 8px; border-radius: 999px; background: #222d39; }
+.quality.good { color: #9ce7c5; }
+.quality.poor, .quality.failed { color: #ffb3ad; }
+.preview { max-height: 230px; margin: 14px 16px; padding: 13px; overflow: auto; white-space: pre-wrap; color: #aeb9c7; background: #080c11; border: 1px solid #222c38; border-radius: 10px; font: 11px/1.55 Consolas, monospace; }
+.analysis-result { display: grid; gap: 5px; margin: 14px 16px; padding: 13px; background: #11261d; border: 1px solid #245a42; border-radius: 10px; }
+.analysis-result a { margin-top: 5px; color: #9ce7c5; text-decoration: none; }
+.actions { display: grid; gap: 10px; padding: 0 16px 16px; }
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.grid:first-of-type { grid-template-columns: repeat(3, 1fr); }
+button { padding: 9px 10px; color: #c8d1dc; background: #151d27; border: 1px solid #2a3542; border-radius: 9px; cursor: pointer; }
+button:hover { border-color: #516277; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.primary { color: #06130d; background: #9ce7c5; border-color: #9ce7c5; font-weight: 750; }
+.wide { width: 100%; padding: 12px; }
+
