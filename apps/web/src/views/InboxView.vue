@@ -42,6 +42,7 @@ const statusText: Record<ContentSummary['analysis_status'], string> = {
 /** 使用用户本地时区展示采集时间。 */
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',

@@ -20,6 +20,7 @@ from .schemas import (
     HealthResponse,
 )
 from .settings import get_settings
+from .urls import normalize_content_url
 
 
 @asynccontextmanager
@@ -59,13 +60,33 @@ def create_capture(
 ) -> CaptureAccepted:
     """幂等保存手动采集内容，并创建一条待分析任务。"""
 
-    existing = session.scalar(select(Content).where(Content.capture_id == payload.capture_id))
+    canonical_url = normalize_content_url(
+        str(payload.source.canonical_url or payload.source.url)
+    )
+    existing = session.scalar(
+        select(Content).where(
+            (Content.capture_id == payload.capture_id)
+            | (
+                (Content.source_type == payload.source.type)
+                & (Content.canonical_url == canonical_url)
+            )
+        )
+    )
     if existing:
+        # 重复提交更新最新正文快照，但内容本身仍保持一条记录。
+        existing.source_url = str(payload.source.url)
+        existing.canonical_url = canonical_url
+        existing.title = payload.source.title
+        existing.author = payload.source.author
+        existing.markdown = payload.document.text
+        existing.capture_quality = payload.capture.quality.level
+        existing.capture_payload_json = payload.model_dump(mode="json")
         analysis = session.scalar(
             select(Analysis).where(Analysis.content_id == existing.id).order_by(Analysis.created_at.desc())
         )
         if analysis is None:
             raise HTTPException(status_code=409, detail="采集记录存在，但分析任务缺失")
+        session.commit()
         return _accepted(existing, analysis)
 
     if payload.capture.quality.level == "failed":
@@ -75,7 +96,7 @@ def create_capture(
         capture_id=payload.capture_id,
         source_type=payload.source.type,
         source_url=str(payload.source.url),
-        canonical_url=str(payload.source.canonical_url) if payload.source.canonical_url else None,
+        canonical_url=canonical_url,
         capture_mode=payload.capture.mode,
         title=payload.source.title,
         author=payload.source.author,

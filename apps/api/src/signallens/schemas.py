@@ -1,9 +1,17 @@
 """API 输入、输出和未来 AI 结构化结果的数据契约。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+
+def attach_utc(value: datetime | None) -> datetime | None:
+    """SQLite 返回无时区时间时，将其按数据库约定解释为 UTC。"""
+
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 class SourcePayload(BaseModel):
@@ -72,6 +80,9 @@ class AnalysisResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None
 
+    _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
+    _normalize_completed_at = field_validator("completed_at", mode="before")(attach_utc)
+
 
 class ContentSummaryResponse(BaseModel):
     """Inbox 使用的内容摘要与最新分析状态。"""
@@ -88,6 +99,8 @@ class ContentSummaryResponse(BaseModel):
     one_sentence_summary: str | None
     recommendation: str | None
     discovery_type: str | None
+
+    _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
 
 
 class ContentDetailResponse(ContentSummaryResponse):
