@@ -66,12 +66,20 @@ def create_schema() -> None:
         ArticleFeedback,
         AuthSession,
         Content,
+        ContentTranslation,
         PluginApiKey,
         UserProfileRecord,
     )
 
     # 这些模型虽未参与下方迁移逻辑，但必须在 create_all 前导入并注册元数据。
-    _ = (AdminUser, ArticleFeedback, AuthSession, PluginApiKey, UserProfileRecord)
+    _ = (
+        AdminUser,
+        ArticleFeedback,
+        AuthSession,
+        ContentTranslation,
+        PluginApiKey,
+        UserProfileRecord,
+    )
 
     Base.metadata.create_all(engine)
     # create_all 不会修改旧表；历史反馈保留原偏差结论，新反馈开始记录用户明确等级。
@@ -102,6 +110,9 @@ def create_schema() -> None:
                 session.query(Analysis).filter(Analysis.id.in_(analysis_ids)).delete(
                     synchronize_session=False
                 )
+            session.query(ContentTranslation).filter(
+                ContentTranslation.content_id == content.id
+            ).delete(synchronize_session=False)
             session.delete(content)
 
     # 内容类型参与唯一身份，避免未来网页快照与同 URL 的视频转录互相覆盖。

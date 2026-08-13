@@ -163,8 +163,33 @@ export interface ContentSummary {
   discovery_type: string | null
 }
 
+export interface TranslationBlock {
+  id: string
+  kind: 'heading' | 'paragraph' | 'list' | 'quote' | 'table' | 'code' | 'image' | 'separator'
+  source_markdown: string
+  translated_markdown: string | null
+  shared: boolean
+}
+
+export interface ContentTranslation {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  source_language: string
+  target_language: 'zh-CN'
+  completed_blocks: number
+  total_blocks: number
+  blocks: TranslationBlock[]
+  model: string | null
+  prompt_version: string
+  last_error: string | null
+  created_at: string
+  completed_at: string | null
+}
+
 export interface ContentDetail extends ContentSummary {
   markdown: string
+  source_language: string
+  translation: ContentTranslation | null
   triage: TriageResult | null
   content_analysis: ContentAnalysisResult | null
   personal_evaluation: PersonalEvaluationResult | null
@@ -261,6 +286,15 @@ export async function getContents(): Promise<ContentSummary[]> {
 export async function getContent(contentId: string): Promise<ContentDetail> {
   const response = await authenticatedFetch(`/api/v1/contents/${encodeURIComponent(contentId)}`)
   return apiResponse<ContentDetail>(response)
+}
+
+/** 幂等创建或重试正文翻译任务；已有有效译文时直接返回缓存。 */
+export async function translateContent(contentId: string): Promise<ContentTranslation> {
+  const response = await authenticatedFetch(
+    `/api/v1/contents/${encodeURIComponent(contentId)}/translation`,
+    { method: 'POST' },
+  )
+  return apiResponse<ContentTranslation>(response)
 }
 
 /** 将失败的分析清空阶段结果后重新放回 Worker 队列。 */

@@ -173,10 +173,42 @@ class FeedbackResponse(BaseModel):
     _normalize_updated_at = field_validator("updated_at", mode="before")(attach_utc)
 
 
+class TranslationBlockResponse(BaseModel):
+    """详情页中保持同一位置的一组原文与译文。"""
+
+    id: str
+    kind: Literal["heading", "paragraph", "list", "quote", "table", "code", "image", "separator"]
+    source_markdown: str
+    translated_markdown: str | None
+    shared: bool
+
+
+class TranslationResponse(BaseModel):
+    """正文翻译任务状态、进度和已完成内容块。"""
+
+    id: str
+    status: Literal["pending", "running", "completed", "failed"]
+    source_language: str
+    target_language: Literal["zh-CN"]
+    completed_blocks: int
+    total_blocks: int
+    blocks: list[TranslationBlockResponse]
+    model: str | None
+    prompt_version: str
+    last_error: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+    _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
+    _normalize_completed_at = field_validator("completed_at", mode="before")(attach_utc)
+
+
 class ContentDetailResponse(ContentSummaryResponse):
     """内容详情页需要的原文快照与完整分析结果。"""
 
     markdown: str
+    source_language: str
+    translation: TranslationResponse | None
     triage: TriageContent | None
     content_analysis: AnalyzeContent | None
     personal_evaluation: EvaluateForUser | None

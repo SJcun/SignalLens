@@ -8,6 +8,7 @@ import {
   getProfile,
   retryAnalysis,
   saveFeedback,
+  translateContent,
   type FeedbackUpdate,
   type Recommendation,
 } from '../api'
@@ -38,13 +39,18 @@ const route = useRoute()
 const contentId = String(route.params.contentId)
 const queryClient = useQueryClient()
 const showMarkdownSource = ref(false)
+const showTranslation = ref(false)
 const profile = useQuery({ queryKey: ['profile'], queryFn: getProfile })
 const content = useQuery({
   queryKey: ['content', contentId],
   queryFn: () => getContent(contentId),
   refetchInterval: (query) => {
     const status = query.state.data?.analysis_status
-    return status === 'pending' || status === 'running' ? 5000 : false
+    const translationStatus = query.state.data?.translation?.status
+    return status === 'pending' || status === 'running'
+      || translationStatus === 'pending' || translationStatus === 'running'
+      ? 5000
+      : false
   },
 })
 const retry = useMutation({
@@ -60,6 +66,56 @@ const renderedMarkdown = computed(() => {
   const data = content.data.value
   return data ? renderMarkdown(data.markdown, data.source_url) : ''
 })
+const canTranslate = computed(() => {
+  const language = content.data.value?.source_language.toLowerCase()
+  return Boolean(language?.startsWith('en'))
+})
+const translation = useMutation({
+  mutationFn: () => translateContent(contentId),
+  onSuccess: async () => {
+    await queryClient.invalidateQueries({ queryKey: ['content', contentId] })
+  },
+})
+const renderedTranslationBlocks = computed(() => {
+  const data = content.data.value
+  if (!data?.translation) return []
+  return data.translation.blocks.map((block) => ({
+    ...block,
+    sourceHtml: renderMarkdown(block.source_markdown, data.source_url),
+    translatedHtml: block.translated_markdown
+      ? renderMarkdown(block.translated_markdown, data.source_url)
+      : '',
+  }))
+})
+const translationButtonText = computed(() => {
+  if (translation.isPending.value) return '正在创建任务…'
+  const task = content.data.value?.translation
+  if (!task) return '翻译为中文'
+  if (task.status === 'pending') return '等待翻译…'
+  if (task.status === 'running') {
+    return `翻译中 ${task.completed_blocks}/${task.total_blocks}`
+  }
+  if (task.status === 'failed') return '重试翻译'
+  return showTranslation.value ? '只看原文' : '中英对照'
+})
+
+watch(
+  () => content.data.value?.translation?.status,
+  (status) => {
+    if (status === 'completed') showTranslation.value = true
+  },
+  { immediate: true },
+)
+
+/** 已完成时切换阅读视图，其余状态由后端幂等创建或重试任务。 */
+function handleTranslation(): void {
+  if (content.data.value?.translation?.status === 'completed') {
+    showTranslation.value = !showTranslation.value
+    showMarkdownSource.value = false
+    return
+  }
+  translation.mutate()
+}
 const currentRecommendationText = computed(() => {
   const recommendation = content.data.value?.ai_recommendation
   return recommendation && recommendation in recommendationText
@@ -307,11 +363,61 @@ const submitFeedback = useMutation({
       <article class="detail-section">
         <div class="section-heading">
           <h2>正文</h2>
-          <button class="view-toggle" type="button" @click="showMarkdownSource = !showMarkdownSource">
-            {{ showMarkdownSource ? '阅读模式' : '查看源码' }}
-          </button>
+          <div class="section-actions">
+            <button
+              v-if="canTranslate"
+              class="view-toggle"
+              type="button"
+              :disabled="translation.isPending.value
+                || content.data.value.translation?.status === 'pending'
+                || content.data.value.translation?.status === 'running'"
+              @click="handleTranslation"
+            >
+              {{ translationButtonText }}
+            </button>
+            <button
+              class="view-toggle"
+              type="button"
+              @click="showMarkdownSource = !showMarkdownSource"
+            >
+              {{ showMarkdownSource ? '阅读模式' : '查看源码' }}
+            </button>
+          </div>
+        </div>
+        <p v-if="translation.isError.value" class="error-text">
+          {{ translation.error.value?.message }}
+        </p>
+        <div
+          v-if="content.data.value.translation?.status === 'failed'"
+          class="translation-error"
+        >
+          翻译失败：{{ content.data.value.translation.last_error || '模型未返回有效译文' }}
         </div>
         <pre v-if="showMarkdownSource" class="markdown-source">{{ content.data.value.markdown }}</pre>
+        <div
+          v-else-if="showTranslation && content.data.value.translation?.status === 'completed'"
+          class="translation-comparison"
+        >
+          <div class="translation-headings" aria-hidden="true">
+            <strong>原文</strong>
+            <strong>中文译文</strong>
+          </div>
+          <div
+            v-for="block in renderedTranslationBlocks"
+            :key="block.id"
+            class="translation-row"
+            :class="{ shared: block.shared }"
+          >
+            <div class="translation-cell markdown-body">
+              <span class="translation-mobile-label">原文</span>
+              <div v-html="block.sourceHtml"></div>
+            </div>
+            <div v-if="!block.shared" class="translation-cell markdown-body translated">
+              <span class="translation-mobile-label">中文译文</span>
+              <div v-html="block.translatedHtml"></div>
+            </div>
+          </div>
+        </div>
         <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
       </article>
     </template>

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -76,6 +76,31 @@ class AnalysisJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     analysis: Mapped[Analysis] = relationship(back_populates="job")
+
+
+class ContentTranslation(Base):
+    """正文快照对应的一份可断点续跑的结构保持译文。"""
+
+    __tablename__ = "content_translations"
+    __table_args__ = (
+        UniqueConstraint("content_id", "target_language", name="uq_translation_content_target"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    content_id: Mapped[str] = mapped_column(ForeignKey("contents.id"), index=True)
+    source_language: Mapped[str] = mapped_column(String(32))
+    target_language: Mapped[str] = mapped_column(String(32), default="zh-CN")
+    source_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    blocks_json: Mapped[list] = mapped_column(JSON, default=list)
+    completed_blocks: Mapped[int] = mapped_column(Integer, default=0)
+    total_blocks: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(32), default="unimplemented")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UserProfileRecord(Base):

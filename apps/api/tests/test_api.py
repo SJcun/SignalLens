@@ -1,5 +1,6 @@
 """采集 API 的最小回归测试。"""
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,8 @@ from fastapi.testclient import TestClient
 from signallens.analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
 from signallens.database import engine
 from signallens.main import _calibration_suggestions, app
-from signallens.worker import _load_user_profile, process_next_job
+from signallens.translation import TranslatedBlock, TranslationBatch
+from signallens.worker import _load_user_profile, process_next_job, process_next_translation
 
 
 class FakeProvider:
@@ -84,6 +86,29 @@ class FailingProvider:
         """始终返回可诊断的模型错误。"""
 
         raise RuntimeError("模拟模型接口错误")
+
+
+class FakeTranslationProvider:
+    """按块返回结构保持译文，用于翻译任务 API 回归。"""
+
+    model = "fake-translation-model"
+
+    def complete(self, *, system_prompt, user_prompt, output_model):
+        """保留 Markdown 和链接，只翻译固定测试文本。"""
+
+        assert output_model is TranslationBatch
+        payload = json.loads(user_prompt)
+        return TranslationBatch(
+            translations=[
+                TranslatedBlock(
+                    id=block["id"],
+                    translated_markdown=block["markdown"]
+                    .replace("English article", "英文文章")
+                    .replace("Read the guide", "阅读指南"),
+                )
+                for block in payload["blocks"]
+            ]
+        )
 
 
 def capture_payload() -> dict:
@@ -320,6 +345,71 @@ def test_health_and_idempotent_capture() -> None:
         completed_retry = client.get(f"/api/v1/analyses/{failed.json()['analysis_id']}")
         assert completed_retry.json()["status"] == "completed"
         assert process_next_job(FakeProvider()) is False
+
+        # 英文正文由用户主动触发翻译；重复点击复用任务，代码和图片不重复翻译。
+        english_payload = capture_payload()
+        english_payload["capture_id"] = "capture-test-english"
+        english_payload["source"]["url"] = "https://example.com/english-article"
+        english_payload["source"]["title"] = "English article"
+        english_payload["document"]["text"] = """---
+language: "en"
+---
+
+# English article
+
+Read the [guide](https://example.com/guide).
+
+```python
+print("keep English code")
+```
+
+![chart](https://example.com/chart.png)
+"""
+        english = client.post("/api/v1/captures", json=english_payload)
+        assert english.status_code == 202
+        translation_url = f"/api/v1/contents/{english.json()['content_id']}/translation"
+        created_translation = client.post(translation_url)
+        repeated_translation = client.post(translation_url)
+        assert created_translation.status_code == 202
+        assert created_translation.json()["id"] == repeated_translation.json()["id"]
+        assert created_translation.json()["total_blocks"] == 2
+
+        assert process_next_translation(FailingProvider()) is True
+        failed_translation = client.get(
+            f"/api/v1/contents/{english.json()['content_id']}"
+        ).json()["translation"]
+        assert failed_translation["status"] == "failed"
+        assert client.post(translation_url).json()["status"] == "pending"
+        assert process_next_translation(FakeTranslationProvider()) is True
+        translated_detail = client.get(
+            f"/api/v1/contents/{english.json()['content_id']}"
+        ).json()
+        assert translated_detail["source_language"] == "en"
+        assert translated_detail["translation"]["status"] == "completed"
+        assert translated_detail["translation"]["completed_blocks"] == 2
+        translated_blocks = translated_detail["translation"]["blocks"]
+        assert translated_blocks[0]["translated_markdown"] == "# 英文文章"
+        assert translated_blocks[2]["kind"] == "code"
+        assert translated_blocks[2]["shared"] is True
+        assert translated_blocks[2]["translated_markdown"] is None
+
+        # 同一 URL 的新正文使旧译文失效；重新触发仍复用记录但从新快照开始。
+        updated_english = english_payload.copy()
+        updated_english["capture_id"] = "capture-test-english-updated"
+        updated_english["document"] = {
+            "format": "markdown",
+            "text": "---\nlanguage: en\n---\n\n# English article updated",
+            "units": [],
+        }
+        assert client.post("/api/v1/captures", json=updated_english).status_code == 202
+        assert client.get(
+            f"/api/v1/contents/{english.json()['content_id']}"
+        ).json()["translation"] is None
+        refreshed_translation = client.post(translation_url)
+        assert refreshed_translation.json()["id"] == created_translation.json()["id"]
+        assert refreshed_translation.json()["status"] == "pending"
+        assert refreshed_translation.json()["completed_blocks"] == 0
+        assert process_next_translation(FakeTranslationProvider()) is True
 
         assert client.delete("/api/v1/plugin-key").status_code == 200
         client.headers["Authorization"] = f"Bearer {second_key}"

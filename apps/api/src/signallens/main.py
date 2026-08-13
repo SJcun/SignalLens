@@ -30,6 +30,7 @@ from .models import (
     ArticleFeedback,
     AuthSession,
     Content,
+    ContentTranslation,
     PluginApiKey,
     UserProfileRecord,
     utc_now,
@@ -56,8 +57,16 @@ from .schemas import (
     PluginKeyStatusResponse,
     ProfileResponse,
     ProfileUpdate,
+    TranslationBlockResponse,
+    TranslationResponse,
 )
 from .settings import get_settings
+from .translation import (
+    TRANSLATION_PROMPT_VERSION,
+    content_source_hash,
+    detect_source_language,
+    split_markdown_blocks,
+)
 from .urls import normalize_content_url
 
 
@@ -627,15 +636,96 @@ def get_content(
     feedback = session.scalar(
         select(ArticleFeedback).where(ArticleFeedback.analysis_id == analysis.id)
     )
+    translation = session.scalar(
+        select(ContentTranslation).where(
+            ContentTranslation.content_id == content.id,
+            ContentTranslation.target_language == "zh-CN",
+        )
+    )
+    current_source_hash = content_source_hash(content.markdown)
     summary = _content_summary(content, analysis, feedback)
     return ContentDetailResponse(
         **summary.model_dump(),
         markdown=content.markdown,
+        source_language=detect_source_language(content.markdown),
+        translation=(
+            _translation_response(translation)
+            if translation and translation.source_hash == current_source_hash
+            else None
+        ),
         triage=analysis.triage_json,
         content_analysis=analysis.content_analysis_json,
         personal_evaluation=analysis.personal_evaluation_json,
         feedback=_feedback_response(feedback) if feedback else None,
     )
+
+
+@app.post(
+    "/api/v1/contents/{content_id}/translation",
+    response_model=TranslationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_or_retry_translation(
+    content_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> TranslationResponse:
+    """幂等创建正文翻译；失败重试只继续尚未完成的内容块。"""
+
+    content = session.get(Content, content_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="内容不存在")
+
+    source_language = detect_source_language(content.markdown)
+    if source_language.lower().startswith("zh"):
+        raise HTTPException(status_code=409, detail="当前正文已经是中文，无需翻译")
+    if not source_language.lower().startswith("en"):
+        raise HTTPException(status_code=409, detail="当前版本只支持英文正文翻译")
+
+    source_hash = content_source_hash(content.markdown)
+    translation = session.scalar(
+        select(ContentTranslation).where(
+            ContentTranslation.content_id == content.id,
+            ContentTranslation.target_language == "zh-CN",
+        )
+    )
+    if translation is None:
+        blocks = split_markdown_blocks(content.markdown)
+        total_blocks = sum(block["translatable"] for block in blocks)
+        if total_blocks == 0:
+            raise HTTPException(status_code=422, detail="正文中没有可翻译的文字")
+        translation = ContentTranslation(
+            content_id=content.id,
+            source_language=source_language,
+            target_language="zh-CN",
+            source_hash=source_hash,
+            blocks_json=blocks,
+            total_blocks=total_blocks,
+        )
+        session.add(translation)
+    elif translation.source_hash != source_hash:
+        # 正文重新采集后旧译文不能继续展示，也不能与新快照混合。
+        blocks = split_markdown_blocks(content.markdown)
+        total_blocks = sum(block["translatable"] for block in blocks)
+        if total_blocks == 0:
+            raise HTTPException(status_code=422, detail="正文中没有可翻译的文字")
+        translation.source_language = source_language
+        translation.source_hash = source_hash
+        translation.status = "pending"
+        translation.blocks_json = blocks
+        translation.completed_blocks = 0
+        translation.total_blocks = total_blocks
+        translation.attempts = 0
+        translation.model = None
+        translation.prompt_version = "unimplemented"
+        translation.last_error = None
+        translation.completed_at = None
+    elif translation.status == "failed":
+        translation.status = "pending"
+        translation.last_error = None
+        translation.completed_at = None
+
+    session.commit()
+    return _translation_response(translation)
 
 
 def _content_summary(
@@ -667,6 +757,34 @@ def _content_summary(
         ai_recommendation=ai_recommendation,
         user_recommendation=user_recommendation,
         discovery_type=personal_evaluation.get("discovery_type") or triage.get("discovery_type"),
+    )
+
+
+def _translation_response(translation: ContentTranslation) -> TranslationResponse:
+    """把内部断点字段转换为详情页需要的安全翻译响应。"""
+
+    return TranslationResponse(
+        id=translation.id,
+        status=translation.status,
+        source_language=translation.source_language,
+        target_language="zh-CN",
+        completed_blocks=translation.completed_blocks,
+        total_blocks=translation.total_blocks,
+        blocks=[
+            TranslationBlockResponse(
+                id=block["id"],
+                kind=block["kind"],
+                source_markdown=block["source_markdown"],
+                translated_markdown=block.get("translated_markdown"),
+                shared=not block["translatable"],
+            )
+            for block in translation.blocks_json
+        ],
+        model=translation.model,
+        prompt_version=translation.prompt_version or TRANSLATION_PROMPT_VERSION,
+        last_error=translation.last_error,
+        created_at=translation.created_at,
+        completed_at=translation.completed_at,
     )
 
 

@@ -16,8 +16,20 @@ from .analysis.prompts import PROMPT_VERSION
 from .analysis.provider import OpenAICompatibleProvider
 from .analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
 from .database import SessionLocal, create_schema
-from .models import Analysis, AnalysisJob, Content, UserProfileRecord, utc_now
+from .models import (
+    Analysis,
+    AnalysisJob,
+    Content,
+    ContentTranslation,
+    UserProfileRecord,
+    utc_now,
+)
 from .settings import get_settings
+from .translation import (
+    TRANSLATION_PROMPT_VERSION,
+    run_translation_batch,
+    translation_batches,
+)
 
 LOGGER = logging.getLogger("signallens.worker")
 
@@ -65,6 +77,27 @@ def process_next_job(
         return True
 
 
+def process_next_translation(provider: StructuredOutputProvider) -> bool:
+    """领取并处理一条正文翻译任务；没有待处理任务时返回 False。"""
+
+    claimed = _claim_next_translation(provider.model)
+    if claimed is None:
+        return False
+
+    translation_id, blocks = claimed
+    try:
+        for batch in translation_batches(blocks):
+            result = run_translation_batch(provider, batch)
+            _save_translation_batch(translation_id, result)
+        _complete_translation(translation_id)
+        return True
+    except Exception as exc:
+        # 已完成的批次会保留；用户重试时只继续翻译尚未完成的块。
+        _fail_translation(translation_id, exc)
+        LOGGER.exception("翻译任务失败：%s", translation_id)
+        return True
+
+
 def _claim_next_job(model: str) -> tuple[str, AnalysisInput] | None:
     """使用条件更新领取最早任务，防止多个 Worker 重复消费。"""
 
@@ -107,6 +140,41 @@ def _claim_next_job(model: str) -> tuple[str, AnalysisInput] | None:
             capture_quality=content.capture_quality,
             markdown=content.markdown,
         )
+
+
+def _claim_next_translation(model: str) -> tuple[str, list[dict]] | None:
+    """原子领取最早的待翻译记录，并返回当前断点内容块。"""
+
+    with SessionLocal.begin() as session:
+        candidate_id = session.scalar(
+            select(ContentTranslation.id)
+            .where(ContentTranslation.status == "pending")
+            .order_by(ContentTranslation.created_at)
+            .limit(1)
+        )
+        if candidate_id is None:
+            return None
+
+        result = session.execute(
+            update(ContentTranslation)
+            .where(
+                ContentTranslation.id == candidate_id,
+                ContentTranslation.status == "pending",
+            )
+            .values(
+                status="running",
+                attempts=ContentTranslation.attempts + 1,
+                model=model,
+                prompt_version=TRANSLATION_PROMPT_VERSION,
+            )
+        )
+        if result.rowcount != 1:
+            return None
+
+        translation = session.get(ContentTranslation, candidate_id)
+        if translation is None:
+            return None
+        return translation.id, list(translation.blocks_json)
 
 
 def _load_user_profile() -> UserProfile:
@@ -174,6 +242,42 @@ def _complete_analysis(analysis_id: str) -> None:
         job.last_error = None
 
 
+def _save_translation_batch(translation_id: str, result) -> None:
+    """保存一批译文和进度，使长文失败后可以从断点继续。"""
+
+    translated = {item.id: item.translated_markdown for item in result.translations}
+    with SessionLocal.begin() as session:
+        translation = session.get(ContentTranslation, translation_id)
+        if translation is None or translation.status != "running":
+            raise RuntimeError(f"翻译任务状态异常：{translation_id}")
+        blocks = [dict(block) for block in translation.blocks_json]
+        for block in blocks:
+            if block["id"] in translated:
+                block["translated_markdown"] = translated[block["id"]]
+        translation.blocks_json = blocks
+        translation.completed_blocks = sum(
+            bool(block.get("translated_markdown"))
+            for block in blocks
+            if block["translatable"]
+        )
+
+
+def _complete_translation(translation_id: str) -> None:
+    """确认所有可翻译块已完成，再结束翻译任务。"""
+
+    with SessionLocal.begin() as session:
+        translation = session.get(ContentTranslation, translation_id)
+        if translation is None or translation.status != "running":
+            raise RuntimeError(f"翻译任务状态异常：{translation_id}")
+        if translation.completed_blocks != translation.total_blocks:
+            raise RuntimeError(
+                f"翻译块未全部完成：{translation.completed_blocks}/{translation.total_blocks}"
+            )
+        translation.status = "completed"
+        translation.completed_at = utc_now()
+        translation.last_error = None
+
+
 def _fail_analysis(analysis_id: str, error: Exception) -> None:
     """记录可诊断的失败状态，不删除已经入库的原始内容。"""
 
@@ -186,6 +290,17 @@ def _fail_analysis(analysis_id: str, error: Exception) -> None:
         if job is not None:
             job.status = "failed"
             job.last_error = str(error)
+
+
+def _fail_translation(translation_id: str, error: Exception) -> None:
+    """记录翻译失败原因，但保留已经成功的批次。"""
+
+    with SessionLocal.begin() as session:
+        translation = session.get(ContentTranslation, translation_id)
+        if translation is not None:
+            translation.status = "failed"
+            translation.completed_at = utc_now()
+            translation.last_error = str(error)
 
 
 def _load_running_task(session, analysis_id: str) -> tuple[Analysis, AnalysisJob]:
@@ -218,5 +333,7 @@ def run() -> None:
         max_tokens=settings.llm_max_tokens,
     )
     while True:
-        if not process_next_job(provider):
+        analysis_processed = process_next_job(provider)
+        translation_processed = process_next_translation(provider)
+        if not analysis_processed and not translation_processed:
             time.sleep(2)
