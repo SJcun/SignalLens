@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
-from .analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
+from .analysis.schemas import AnalyzeContent, EvaluateForUser, Recommendation, TriageContent
 
 
 def attach_utc(value: datetime | None) -> datetime | None:
@@ -99,7 +99,9 @@ class ContentSummaryResponse(BaseModel):
     analysis_id: str
     analysis_status: Literal["pending", "running", "completed", "failed"]
     one_sentence_summary: str | None
-    recommendation: str | None
+    recommendation: Recommendation | None
+    ai_recommendation: Recommendation | None
+    user_recommendation: Recommendation | None
     discovery_type: str | None
 
     _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
@@ -145,18 +147,24 @@ class ProfileResponse(BaseModel):
 class FeedbackUpsert(BaseModel):
     """阅读后提交的最小人工评价。"""
 
-    recommendation_accuracy: Literal["too_high", "accurate", "too_low"]
+    preferred_recommendation: Recommendation
     time_worthwhile: Literal["no", "partly", "yes"]
     new_knowledge: Literal["none", "some", "much"]
     summary_quality: Literal["accurate", "omission", "misleading", "not_sure"]
     key_takeaway: str | None = Field(default=None, max_length=2000)
 
 
-class FeedbackResponse(FeedbackUpsert):
+class FeedbackResponse(BaseModel):
     """文章详情页回显的人工评价。"""
 
     id: str
     analysis_id: str
+    preferred_recommendation: Recommendation | None
+    recommendation_accuracy: Literal["too_high", "accurate", "too_low"]
+    time_worthwhile: Literal["no", "partly", "yes"]
+    new_knowledge: Literal["none", "some", "much"]
+    summary_quality: Literal["accurate", "omission", "misleading", "not_sure"]
+    key_takeaway: str | None
     ai_recommendation: str | None
     model: str | None
     prompt_version: str
@@ -175,6 +183,30 @@ class ContentDetailResponse(ContentSummaryResponse):
     feedback: FeedbackResponse | None
 
 
+class CalibrationMatrixCell(BaseModel):
+    """AI 原建议与用户最终等级的一个有效对照单元。"""
+
+    ai_recommendation: Recommendation
+    user_recommendation: Recommendation
+    count: int
+
+
+class CalibrationSuggestionDecision(BaseModel):
+    """用户对候选阅读规则的明确处理决定。"""
+
+    decision: Literal["accepted", "rejected"]
+
+
+class CalibrationSuggestionResponse(BaseModel):
+    """达到样本门槛后由统计证据生成的候选规则。"""
+
+    id: str
+    title: str
+    evidence: str
+    proposed_rule: str
+    status: Literal["pending", "accepted", "rejected"]
+
+
 class CalibrationStatsResponse(BaseModel):
     """评测模式所需的基础校准指标。"""
 
@@ -188,6 +220,11 @@ class CalibrationStatsResponse(BaseModel):
     accuracy_rate: float | None
     summary_issue_count: int
     high_value_miss_count: int
+    feedback_needed: int
+    adjacent_error_count: int
+    major_error_count: int
+    confusion_matrix: list[CalibrationMatrixCell]
+    suggestions: list[CalibrationSuggestionResponse]
 
 
 class HealthResponse(BaseModel):

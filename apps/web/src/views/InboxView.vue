@@ -2,7 +2,14 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed, ref } from 'vue'
 
-import { getContents, getHealth, type ContentSummary } from '../api'
+import { getContents, getHealth, type ContentSummary, type Recommendation } from '../api'
+
+const recommendationText: Record<Recommendation, string> = {
+  ignore: '可以忽略',
+  summary_enough: '摘要即可',
+  selective_read: '选择性阅读',
+  deep_read: '全文精读',
+}
 
 const health = useQuery({ queryKey: ['health'], queryFn: getHealth, retry: 1 })
 const contents = useQuery({
@@ -16,7 +23,7 @@ type Filter = 'all' | 'deep_read' | 'summary_enough' | 'selective_read' | 'ignor
 const activeFilter = ref<Filter>('all')
 const filters: Array<{ value: Filter; label: string }> = [
   { value: 'all', label: '全部' },
-  { value: 'deep_read', label: '推荐精读' },
+  { value: 'deep_read', label: '全文精读' },
   { value: 'summary_enough', label: '摘要即可' },
   { value: 'selective_read', label: '选择性阅读' },
   { value: 'ignore', label: '可以忽略' },
@@ -48,6 +55,18 @@ function formatTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+/** 展示最终分类的来源，避免把用户修正误认为 AI 原始建议。 */
+function correctionText(item: ContentSummary): string | null {
+  if (!item.user_recommendation) return null
+  if (item.user_recommendation === item.ai_recommendation) {
+    return `用户确认：${recommendationText[item.user_recommendation]}`
+  }
+  const aiText = item.ai_recommendation
+    ? recommendationText[item.ai_recommendation]
+    : '暂无建议'
+  return `用户修正：${recommendationText[item.user_recommendation]} · AI 原建议：${aiText}`
 }
 </script>
 
@@ -105,6 +124,12 @@ function formatTime(value: string): string {
         <div class="card-footer">
           <span v-if="item.author">{{ item.author }}</span>
           <span>提取质量：{{ item.capture_quality }}</span>
+          <span v-if="correctionText(item)" class="correction-tag">
+            {{ correctionText(item) }}
+          </span>
+          <span v-else-if="item.recommendation" class="recommendation-tag">
+            AI 建议：{{ recommendationText[item.recommendation] }}
+          </span>
           <span v-if="item.discovery_type === 'outside_profile_high_value'" class="explore-tag">
             认知探索
           </span>

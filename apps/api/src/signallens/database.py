@@ -2,7 +2,8 @@
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, event, inspect, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .settings import get_settings
@@ -38,6 +39,23 @@ def get_session() -> Generator[Session, None, None]:
         yield session
 
 
+def _add_sqlite_column(table: str, column: str, definition: str) -> None:
+    """为开发期 SQLite 旧表补列，并容忍 API 与 Worker 同时迁移。"""
+
+    try:
+        with engine.begin() as connection:
+            columns = {item["name"] for item in inspect(connection).get_columns(table)}
+            if column not in columns:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+    except OperationalError:
+        with engine.connect() as connection:
+            migrated_columns = {
+                item["name"] for item in inspect(connection).get_columns(table)
+            }
+        if column not in migrated_columns:
+            raise
+
+
 def create_schema() -> None:
     """创建开发期数据表，并补齐现有内容的唯一身份。"""
 
@@ -56,6 +74,10 @@ def create_schema() -> None:
     _ = (AdminUser, ArticleFeedback, AuthSession, PluginApiKey, UserProfileRecord)
 
     Base.metadata.create_all(engine)
+    # create_all 不会修改旧表；历史反馈保留原偏差结论，新反馈开始记录用户明确等级。
+    _add_sqlite_column("article_feedback", "preferred_recommendation", "VARCHAR(32)")
+    _add_sqlite_column("user_profile", "calibration_decisions_json", "JSON")
+
     with SessionLocal.begin() as session:
         # 早期版本按随机 capture_id 保存，可能为同一网页创建多条内容。
         # 迁移时保留最新快照，并手动清理重复记录关联的未执行任务。

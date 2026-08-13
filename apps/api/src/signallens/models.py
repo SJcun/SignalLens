@@ -91,6 +91,9 @@ class UserProfileRecord(Base):
     time_budget_minutes: Mapped[int] = mapped_column(Integer, default=20)
     exploration_level: Mapped[str] = mapped_column(String(16), default="medium")
     evaluation_mode: Mapped[bool] = mapped_column(Boolean, default=True)
+    calibration_decisions_json: Mapped[dict | None] = mapped_column(
+        JSON, default=dict, nullable=True
+    )
     questionnaire_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -109,6 +112,7 @@ class ArticleFeedback(Base):
     analysis_id: Mapped[str] = mapped_column(
         ForeignKey("analyses.id"), unique=True, index=True
     )
+    preferred_recommendation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     recommendation_accuracy: Mapped[str] = mapped_column(String(16))
     time_worthwhile: Mapped[str] = mapped_column(String(16))
     new_knowledge: Mapped[str] = mapped_column(String(16))

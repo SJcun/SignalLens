@@ -9,10 +9,11 @@ import {
   retryAnalysis,
   saveFeedback,
   type FeedbackUpdate,
+  type Recommendation,
 } from '../api'
 import { renderMarkdown } from '../markdown'
 
-const recommendationText = {
+const recommendationText: Record<Recommendation, string> = {
   ignore: '可以忽略',
   summary_enough: '摘要即可',
   selective_read: '选择性阅读',
@@ -59,8 +60,17 @@ const renderedMarkdown = computed(() => {
   const data = content.data.value
   return data ? renderMarkdown(data.markdown, data.source_url) : ''
 })
-const feedbackForm = reactive<FeedbackUpdate>({
-  recommendation_accuracy: 'accurate',
+const currentRecommendationText = computed(() => {
+  const recommendation = content.data.value?.ai_recommendation
+  return recommendation && recommendation in recommendationText
+    ? recommendationText[recommendation as Recommendation]
+    : '暂无建议'
+})
+type FeedbackForm = Omit<FeedbackUpdate, 'preferred_recommendation'> & {
+  preferred_recommendation: Recommendation | ''
+}
+const feedbackForm = reactive<FeedbackForm>({
+  preferred_recommendation: '',
   time_worthwhile: 'yes',
   new_knowledge: 'some',
   summary_quality: 'accurate',
@@ -72,7 +82,7 @@ watch(
   (feedback) => {
     if (!feedback) return
     Object.assign(feedbackForm, {
-      recommendation_accuracy: feedback.recommendation_accuracy,
+      preferred_recommendation: feedback.preferred_recommendation || '',
       time_worthwhile: feedback.time_worthwhile,
       new_knowledge: feedback.new_knowledge,
       summary_quality: feedback.summary_quality,
@@ -83,10 +93,18 @@ watch(
 )
 
 const submitFeedback = useMutation({
-  mutationFn: () => saveFeedback(content.data.value!.analysis_id, { ...feedbackForm }),
+  mutationFn: () => {
+    const preferredRecommendation = feedbackForm.preferred_recommendation
+    if (!preferredRecommendation) throw new Error('请选择你认为最合适的阅读投入')
+    return saveFeedback(content.data.value!.analysis_id, {
+      ...feedbackForm,
+      preferred_recommendation: preferredRecommendation,
+    })
+  },
   onSuccess: async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['content', contentId] }),
+      queryClient.invalidateQueries({ queryKey: ['contents'] }),
       queryClient.invalidateQueries({ queryKey: ['calibration-stats'] }),
     ])
   },
@@ -227,11 +245,14 @@ const submitFeedback = useMutation({
 
         <div class="feedback-grid">
           <label>
-            <span>AI 推荐的阅读投入</span>
-            <select v-model="feedbackForm.recommendation_accuracy">
-              <option value="too_high">建议偏高</option>
-              <option value="accurate">基本准确</option>
-              <option value="too_low">建议偏低</option>
+            <span>阅读后，你认为最合适的阅读投入</span>
+            <small>AI 当前建议：{{ currentRecommendationText }}</small>
+            <select v-model="feedbackForm.preferred_recommendation" required>
+              <option value="" disabled>请选择</option>
+              <option value="ignore">可以忽略</option>
+              <option value="summary_enough">摘要即可</option>
+              <option value="selective_read">选择性阅读</option>
+              <option value="deep_read">全文精读</option>
             </select>
           </label>
           <label>

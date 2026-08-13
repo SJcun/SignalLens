@@ -19,7 +19,7 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 | 后端 API | 单用户登录与改密、可撤销 Web 会话、最小权限插件 Key、内容采集与去重、分析状态、显式用户画像、人工反馈快照、校准统计 | 画像修改建议 |
 | 数据层 | SQLite、WAL、内容/分析/任务持久化、已有重复数据迁移 | 正式 Alembic 迁移体系 |
 | Worker | OpenAI/DeepSeek JSON 输出适配、JSON 截断精简重试、原子任务领取、三阶段分析、逐阶段持久化、失败隔离 | 任务级退避重试、超时任务恢复 |
-| Web | 登录、改密、插件 Key 管理、Inbox、阅读建议、Markdown 阅读/源码视图、初始问卷、评测开关、阅读后反馈和校准统计 | AI 差异解释、忽略内容抽检 |
+| Web | 登录、改密、插件 Key 管理、用户修正优先的 Inbox 分类、阅读建议、Markdown 阅读/源码视图、初始问卷、评测开关、阅读后反馈、四级校准矩阵和规则候选确认 | AI 案例级差异解释、忽略内容抽检 |
 | 部署 | Dockerfile、Compose、Nginx 示例 | 当前开发机未安装 Docker，容器尚未实机验证 |
 
 ## 系统结构
@@ -214,6 +214,7 @@ data/signallens.db
 | `PUT` | `/api/v1/profile` | 保存显式用户画像 |
 | `PUT` | `/api/v1/analyses/{analysis_id}/feedback` | 新增或更新阅读后评价 |
 | `GET` | `/api/v1/calibration/stats` | 获取推荐偏差和摘要问题统计 |
+| `PUT` | `/api/v1/calibration/suggestions/{suggestion_id}` | 接受或拒绝下一版阅读规则候选 |
 
 除健康检查和登录外，所有 `/api/v1` 接口都必须发送 `Authorization: Bearer <token>`。Web 使用登录会话；插件使用形如 `sk-sl-...` 的独立 Key，而且该 Key 只允许调用 `POST /api/v1/captures`。重新生成 Key 会立即使旧值失效，数据库仅保存哈希。Docker 部署时初始密码位于 API 容器挂载卷的 `/data/initial-admin-password.txt`，可用以下命令读取：
 
@@ -261,6 +262,8 @@ Worker 会按创建时间领取待处理任务，并依次执行：
 模型输出必须通过 Pydantic/JSON Schema 校验。单条任务失败会标记为 `failed`，不会丢失原始正文，也不会终止 Worker；内容详情页可以将失败任务重新放回队列。手动提交的有效内容不会被快速分诊静默拦截。
 
 阅读偏好页保存后，Worker 会将显式画像用于后续新领取任务的 `TriageContent` 和 `EvaluateForUser`。系统不会自动重算历史文章，也不会根据单篇反馈自动修改画像。阅读后评价会冻结当时的模型、Prompt 版本和三阶段结果，供后续公平比较。
+
+用户提交明确阅读等级后，Inbox 以用户修正等级作为最终分类，同时保留 AI 原始建议用于评测。累计至少 20 条包含明确等级的有效反馈后，统计页才会根据重复偏差提出下一版阅读规则候选；接受候选只记录人工决定，不会自动训练模型、修改画像或直接改写当前 Prompt。
 
 ## 下一阶段
 

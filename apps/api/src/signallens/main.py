@@ -1,6 +1,7 @@
 """FastAPI 应用入口。"""
 
 from contextlib import asynccontextmanager
+from math import ceil
 from typing import Annotated
 
 import uvicorn
@@ -35,7 +36,10 @@ from .models import (
 )
 from .schemas import (
     AnalysisResponse,
+    CalibrationMatrixCell,
     CalibrationStatsResponse,
+    CalibrationSuggestionDecision,
+    CalibrationSuggestionResponse,
     CaptureAccepted,
     CaptureRequest,
     ChangePasswordRequest,
@@ -68,6 +72,13 @@ async def lifespan(_app: FastAPI):
 
 settings = get_settings()
 app = FastAPI(title="SignalLens API", version="0.1.0", lifespan=lifespan)
+RECOMMENDATION_ORDER = {
+    "ignore": 0,
+    "summary_enough": 1,
+    "selective_read": 2,
+    "deep_read": 3,
+}
+CALIBRATION_MIN_FEEDBACK = 20
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin],
@@ -403,27 +414,44 @@ def upsert_feedback(
     if analysis.status != "completed":
         raise HTTPException(status_code=409, detail="分析完成后才能提交阅读评价")
 
-    evaluation = analysis.personal_evaluation_json or {}
     feedback = session.scalar(
         select(ArticleFeedback).where(ArticleFeedback.analysis_id == analysis.id)
+    )
+    evaluation = analysis.personal_evaluation_json or {}
+    ai_recommendation = (
+        feedback.ai_recommendation
+        if feedback is not None
+        else evaluation.get("recommendation")
+        or (
+            "ignore"
+            if (analysis.triage_json or {}).get("decision") == "ignore"
+            else None
+        )
+    )
+    if ai_recommendation not in RECOMMENDATION_ORDER:
+        raise HTTPException(status_code=409, detail="当前分析没有可比较的阅读建议")
+
+    # 用户只提交自己认为合适的等级，偏差方向由固定等级顺序统一计算。
+    ai_level = RECOMMENDATION_ORDER[ai_recommendation]
+    preferred_level = RECOMMENDATION_ORDER[payload.preferred_recommendation]
+    recommendation_accuracy = (
+        "too_high"
+        if ai_level > preferred_level
+        else "too_low" if ai_level < preferred_level else "accurate"
     )
     if feedback is None:
         feedback = ArticleFeedback(
             content_id=analysis.content_id,
             analysis_id=analysis.id,
-            recommendation_accuracy=payload.recommendation_accuracy,
+            preferred_recommendation=payload.preferred_recommendation,
+            recommendation_accuracy=recommendation_accuracy,
             time_worthwhile=payload.time_worthwhile,
             new_knowledge=payload.new_knowledge,
             summary_quality=payload.summary_quality,
             key_takeaway=payload.key_takeaway,
             # 分诊阶段直接忽略时不会生成个人评估，也要保留 AI 的原始建议，
             # 否则无法统计用户认为值得阅读的漏判。
-            ai_recommendation=evaluation.get("recommendation")
-            or (
-                "ignore"
-                if (analysis.triage_json or {}).get("decision") == "ignore"
-                else None
-            ),
+            ai_recommendation=ai_recommendation,
             model=analysis.model,
             prompt_version=analysis.prompt_version,
             analysis_snapshot_json=_analysis_snapshot(analysis),
@@ -431,7 +459,8 @@ def upsert_feedback(
         session.add(feedback)
     else:
         # 更新人工评价，但保留首次提交时冻结的 AI 快照和版本。
-        feedback.recommendation_accuracy = payload.recommendation_accuracy
+        feedback.preferred_recommendation = payload.preferred_recommendation
+        feedback.recommendation_accuracy = recommendation_accuracy
         feedback.time_worthwhile = payload.time_worthwhile
         feedback.new_knowledge = payload.new_knowledge
         feedback.summary_quality = payload.summary_quality
@@ -449,9 +478,27 @@ def calibration_stats(
 
     profile = _get_or_create_profile(session)
     feedbacks = session.scalars(select(ArticleFeedback)).all()
+    eligible_feedbacks = [
+        item
+        for item in feedbacks
+        if item.ai_recommendation in RECOMMENDATION_ORDER
+        and item.preferred_recommendation in RECOMMENDATION_ORDER
+    ]
     accurate = sum(item.recommendation_accuracy == "accurate" for item in feedbacks)
     too_high = sum(item.recommendation_accuracy == "too_high" for item in feedbacks)
     too_low = sum(item.recommendation_accuracy == "too_low" for item in feedbacks)
+    confusion_counts: dict[tuple[str, str], int] = {}
+    adjacent_error_count = 0
+    major_error_count = 0
+    for item in eligible_feedbacks:
+        key = (item.ai_recommendation, item.preferred_recommendation)
+        confusion_counts[key] = confusion_counts.get(key, 0) + 1
+        distance = abs(
+            RECOMMENDATION_ORDER[item.ai_recommendation]
+            - RECOMMENDATION_ORDER[item.preferred_recommendation]
+        )
+        adjacent_error_count += distance == 1
+        major_error_count += distance >= 2
     completed = int(
         session.scalar(select(func.count()).select_from(Analysis).where(Analysis.status == "completed"))
         or 0
@@ -473,7 +520,62 @@ def calibration_stats(
             and (item.recommendation_accuracy == "too_low" or item.time_worthwhile == "yes")
             for item in feedbacks
         ),
+        feedback_needed=max(0, CALIBRATION_MIN_FEEDBACK - len(eligible_feedbacks)),
+        adjacent_error_count=adjacent_error_count,
+        major_error_count=major_error_count,
+        confusion_matrix=[
+            CalibrationMatrixCell(
+                ai_recommendation=ai_recommendation,
+                user_recommendation=user_recommendation,
+                count=count,
+            )
+            for (ai_recommendation, user_recommendation), count in sorted(
+                confusion_counts.items(),
+                key=lambda item: (
+                    RECOMMENDATION_ORDER[item[0][0]],
+                    RECOMMENDATION_ORDER[item[0][1]],
+                ),
+            )
+        ],
+        suggestions=_calibration_suggestions(
+            eligible_feedbacks,
+            profile.calibration_decisions_json or {},
+        ),
     )
+
+
+@app.put(
+    "/api/v1/calibration/suggestions/{suggestion_id}",
+    response_model=CalibrationSuggestionResponse,
+)
+def decide_calibration_suggestion(
+    suggestion_id: str,
+    payload: CalibrationSuggestionDecision,
+    session: Annotated[Session, Depends(get_session)],
+) -> CalibrationSuggestionResponse:
+    """记录用户对候选规则的决定，但不自动修改画像或模型 Prompt。"""
+
+    profile = _get_or_create_profile(session)
+    feedbacks = session.scalars(select(ArticleFeedback)).all()
+    suggestions = _calibration_suggestions(
+        [
+            item
+            for item in feedbacks
+            if item.ai_recommendation in RECOMMENDATION_ORDER
+            and item.preferred_recommendation in RECOMMENDATION_ORDER
+        ],
+        profile.calibration_decisions_json or {},
+    )
+    suggestion = next((item for item in suggestions if item.id == suggestion_id), None)
+    if suggestion is None:
+        raise HTTPException(status_code=409, detail="当前反馈尚不足以支持这条校准建议")
+
+    decisions = dict(profile.calibration_decisions_json or {})
+    decisions[suggestion_id] = payload.decision
+    profile.calibration_decisions_json = decisions
+    profile.updated_at = utc_now()
+    session.commit()
+    return suggestion.model_copy(update={"status": payload.decision})
 
 
 @app.get("/api/v1/contents", response_model=list[ContentSummaryResponse])
@@ -493,12 +595,16 @@ def list_contents(
         .scalar_subquery()
     )
     rows = session.execute(
-        select(Content, Analysis)
+        select(Content, Analysis, ArticleFeedback)
         .join(Analysis, Analysis.id == latest_analysis_id)
+        .outerjoin(ArticleFeedback, ArticleFeedback.analysis_id == Analysis.id)
         .order_by(Content.created_at.desc())
         .limit(safe_limit)
     ).all()
-    return [_content_summary(content, analysis) for content, analysis in rows]
+    return [
+        _content_summary(content, analysis, feedback)
+        for content, analysis, feedback in rows
+    ]
 
 
 @app.get("/api/v1/contents/{content_id}", response_model=ContentDetailResponse)
@@ -521,7 +627,7 @@ def get_content(
     feedback = session.scalar(
         select(ArticleFeedback).where(ArticleFeedback.analysis_id == analysis.id)
     )
-    summary = _content_summary(content, analysis)
+    summary = _content_summary(content, analysis, feedback)
     return ContentDetailResponse(
         **summary.model_dump(),
         markdown=content.markdown,
@@ -532,12 +638,20 @@ def get_content(
     )
 
 
-def _content_summary(content: Content, analysis: Analysis) -> ContentSummaryResponse:
+def _content_summary(
+    content: Content,
+    analysis: Analysis,
+    feedback: ArticleFeedback | None = None,
+) -> ContentSummaryResponse:
     """从持久化 JSON 中安全提取 Inbox 所需的少量展示字段。"""
 
     content_analysis = analysis.content_analysis_json or {}
     personal_evaluation = analysis.personal_evaluation_json or {}
     triage = analysis.triage_json or {}
+    ai_recommendation = personal_evaluation.get("recommendation") or (
+        "ignore" if triage.get("decision") == "ignore" else None
+    )
+    user_recommendation = feedback.preferred_recommendation if feedback else None
     return ContentSummaryResponse(
         id=content.id,
         title=content.title,
@@ -549,11 +663,92 @@ def _content_summary(content: Content, analysis: Analysis) -> ContentSummaryResp
         analysis_id=analysis.id,
         analysis_status=analysis.status,
         one_sentence_summary=content_analysis.get("one_sentence_summary"),
-        recommendation=personal_evaluation.get("recommendation") or (
-            "ignore" if triage.get("decision") == "ignore" else None
-        ),
+        recommendation=user_recommendation or ai_recommendation,
+        ai_recommendation=ai_recommendation,
+        user_recommendation=user_recommendation,
         discovery_type=personal_evaluation.get("discovery_type") or triage.get("discovery_type"),
     )
+
+
+def _calibration_suggestions(
+    feedbacks: list[ArticleFeedback],
+    decisions: dict,
+) -> list[CalibrationSuggestionResponse]:
+    """从足量真实反馈中提取候选规则，不自动改写画像或 Prompt。"""
+
+    if len(feedbacks) < CALIBRATION_MIN_FEEDBACK:
+        return []
+
+    threshold = max(5, ceil(len(feedbacks) * 0.25))
+    too_high = sum(item.recommendation_accuracy == "too_high" for item in feedbacks)
+    too_low = sum(item.recommendation_accuracy == "too_low" for item in feedbacks)
+    high_value_miss = sum(
+        item.ai_recommendation == "ignore"
+        and item.preferred_recommendation != "ignore"
+        for item in feedbacks
+    )
+    summary_issues = sum(
+        item.summary_quality in {"omission", "misleading"} for item in feedbacks
+    )
+    candidates: list[tuple[str, str, str, str]] = []
+
+    if too_high >= threshold and too_low >= threshold:
+        candidates.append(
+            (
+                "split_recommendation_context",
+                "按场景拆分阅读投入标准",
+                f"{too_high} 次建议偏高，同时有 {too_low} 次建议偏低。",
+                "不要整体调高或调低阅读投入；分别检查知识重复、证据强度和探索价值。",
+            )
+        )
+    elif too_high >= threshold and too_high >= too_low * 1.5:
+        candidates.append(
+            (
+                "reduce_over_recommendation",
+                "降低过度投入建议",
+                f"{len(feedbacks)} 条有效反馈中有 {too_high} 次建议偏高。",
+                "知识重叠高且没有明确新增信息时，阅读投入最高为“摘要即可”。",
+            )
+        )
+    elif too_low >= threshold and too_low >= too_high * 1.5:
+        candidates.append(
+            (
+                "protect_under_recommendation",
+                "减少低估高价值内容",
+                f"{len(feedbacks)} 条有效反馈中有 {too_low} 次建议偏低。",
+                "存在关键新知识、强反方观点或高探索价值时，不应仅因主题低相关而降低投入。",
+            )
+        )
+
+    if high_value_miss >= max(3, ceil(len(feedbacks) * 0.15)):
+        candidates.append(
+            (
+                "protect_ignore_boundary",
+                "收紧“可以忽略”的边界",
+                f"有 {high_value_miss} 篇被建议忽略的内容被用户修正为值得阅读。",
+                "只有低内在价值且低探索价值时才建议忽略；不确定时至少保留为摘要即可。",
+            )
+        )
+    if summary_issues >= threshold:
+        candidates.append(
+            (
+                "preserve_summary_evidence",
+                "加强摘要的证据与限制保留",
+                f"有 {summary_issues} 条反馈指出摘要存在遗漏或误导。",
+                "摘要必须保留原文的重要限制、反方观点和未验证主张。",
+            )
+        )
+
+    return [
+        CalibrationSuggestionResponse(
+            id=suggestion_id,
+            title=title,
+            evidence=evidence,
+            proposed_rule=proposed_rule,
+            status=decisions.get(suggestion_id, "pending"),
+        )
+        for suggestion_id, title, evidence, proposed_rule in candidates
+    ]
 
 
 def _accepted(content: Content, analysis: Analysis) -> CaptureAccepted:
@@ -625,6 +820,7 @@ def _feedback_response(feedback: ArticleFeedback) -> FeedbackResponse:
     return FeedbackResponse(
         id=feedback.id,
         analysis_id=feedback.analysis_id,
+        preferred_recommendation=feedback.preferred_recommendation,
         recommendation_accuracy=feedback.recommendation_accuracy,
         time_worthwhile=feedback.time_worthwhile,
         new_knowledge=feedback.new_knowledge,

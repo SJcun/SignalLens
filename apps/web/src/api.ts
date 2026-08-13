@@ -97,6 +97,7 @@ export type ProfileUpdate = Omit<UserProfile, 'questionnaire_completed' | 'updat
 export interface ArticleFeedback {
   id: string
   analysis_id: string
+  preferred_recommendation: Recommendation | null
   recommendation_accuracy: 'too_high' | 'accurate' | 'too_low'
   time_worthwhile: 'no' | 'partly' | 'yes'
   new_knowledge: 'none' | 'some' | 'much'
@@ -110,8 +111,8 @@ export interface ArticleFeedback {
 
 export type FeedbackUpdate = Pick<
   ArticleFeedback,
-  'recommendation_accuracy' | 'time_worthwhile' | 'new_knowledge' | 'summary_quality' | 'key_takeaway'
->
+  'time_worthwhile' | 'new_knowledge' | 'summary_quality' | 'key_takeaway'
+> & { preferred_recommendation: Recommendation }
 
 export interface CalibrationStats {
   evaluation_mode: boolean
@@ -124,6 +125,25 @@ export interface CalibrationStats {
   accuracy_rate: number | null
   summary_issue_count: number
   high_value_miss_count: number
+  feedback_needed: number
+  adjacent_error_count: number
+  major_error_count: number
+  confusion_matrix: CalibrationMatrixCell[]
+  suggestions: CalibrationSuggestion[]
+}
+
+export interface CalibrationMatrixCell {
+  ai_recommendation: Recommendation
+  user_recommendation: Recommendation
+  count: number
+}
+
+export interface CalibrationSuggestion {
+  id: string
+  title: string
+  evidence: string
+  proposed_rule: string
+  status: 'pending' | 'accepted' | 'rejected'
 }
 
 export interface ContentSummary {
@@ -137,7 +157,9 @@ export interface ContentSummary {
   analysis_id: string
   analysis_status: AnalysisStatus
   one_sentence_summary: string | null
-  recommendation: string | null
+  recommendation: Recommendation | null
+  ai_recommendation: Recommendation | null
+  user_recommendation: Recommendation | null
   discovery_type: string | null
 }
 
@@ -282,4 +304,20 @@ export async function saveFeedback(
 export async function getCalibrationStats(): Promise<CalibrationStats> {
   const response = await authenticatedFetch('/api/v1/calibration/stats')
   return apiResponse<CalibrationStats>(response)
+}
+
+/** 记录候选阅读规则的人工决定；该决定不会直接改写画像或 Prompt。 */
+export async function decideCalibrationSuggestion(
+  suggestionId: string,
+  decision: 'accepted' | 'rejected',
+): Promise<CalibrationSuggestion> {
+  const response = await authenticatedFetch(
+    `/api/v1/calibration/suggestions/${encodeURIComponent(suggestionId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    },
+  )
+  return apiResponse<CalibrationSuggestion>(response)
 }

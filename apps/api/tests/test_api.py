@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 TEST_DB = Path(__file__).with_name("test.db")
 TEST_BOOTSTRAP = Path(__file__).with_name("initial-admin-password.txt")
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from signallens.analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
 from signallens.database import engine
-from signallens.main import app
+from signallens.main import _calibration_suggestions, app
 from signallens.worker import _load_user_profile, process_next_job
 
 
@@ -201,12 +202,14 @@ def test_health_and_idempotent_capture() -> None:
         assert completed.json()["triage"]["decision"] == "continue"
         assert completed.json()["one_sentence_summary"] == "文章介绍了一个值得验证的新方法。"
         assert completed.json()["recommendation"] == "selective_read"
+        assert completed.json()["ai_recommendation"] == "selective_read"
+        assert completed.json()["user_recommendation"] is None
         assert completed.json()["feedback"] is None
 
         feedback = client.put(
             f"/api/v1/analyses/{first.json()['analysis_id']}/feedback",
             json={
-                "recommendation_accuracy": "accurate",
+                "preferred_recommendation": "selective_read",
                 "time_worthwhile": "yes",
                 "new_knowledge": "some",
                 "summary_quality": "omission",
@@ -215,6 +218,8 @@ def test_health_and_idempotent_capture() -> None:
         )
         assert feedback.status_code == 200
         assert feedback.json()["ai_recommendation"] == "selective_read"
+        assert feedback.json()["preferred_recommendation"] == "selective_read"
+        assert feedback.json()["recommendation_accuracy"] == "accurate"
         assert feedback.json()["model"] == "fake-test-model"
 
         stats = client.get("/api/v1/calibration/stats")
@@ -226,7 +231,7 @@ def test_health_and_idempotent_capture() -> None:
         updated_feedback = client.put(
             f"/api/v1/analyses/{first.json()['analysis_id']}/feedback",
             json={
-                "recommendation_accuracy": "too_low",
+                "preferred_recommendation": "deep_read",
                 "time_worthwhile": "yes",
                 "new_knowledge": "much",
                 "summary_quality": "accurate",
@@ -234,7 +239,40 @@ def test_health_and_idempotent_capture() -> None:
             },
         )
         assert updated_feedback.status_code == 200
+        assert updated_feedback.json()["recommendation_accuracy"] == "too_low"
         assert client.get("/api/v1/calibration/stats").json()["feedback_count"] == 1
+
+        corrected_feedback = client.put(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/feedback",
+            json={
+                "preferred_recommendation": "summary_enough",
+                "time_worthwhile": "partly",
+                "new_knowledge": "some",
+                "summary_quality": "accurate",
+                "key_takeaway": "摘要已经足够。",
+            },
+        )
+        assert corrected_feedback.status_code == 200
+        assert corrected_feedback.json()["recommendation_accuracy"] == "too_high"
+        corrected_content = client.get(f"/api/v1/contents/{first.json()['content_id']}")
+        assert corrected_content.json()["recommendation"] == "summary_enough"
+        assert corrected_content.json()["ai_recommendation"] == "selective_read"
+        assert corrected_content.json()["user_recommendation"] == "summary_enough"
+        corrected_list_item = client.get("/api/v1/contents").json()[0]
+        assert corrected_list_item["recommendation"] == "summary_enough"
+
+        corrected_stats = client.get("/api/v1/calibration/stats").json()
+        assert corrected_stats["feedback_needed"] == 19
+        assert corrected_stats["confusion_matrix"] == [
+            {
+                "ai_recommendation": "selective_read",
+                "user_recommendation": "summary_enough",
+                "count": 1,
+            }
+        ]
+        assert corrected_stats["adjacent_error_count"] == 1
+        assert corrected_stats["major_error_count"] == 0
+        assert corrected_stats["suggestions"] == []
 
         # 自动采集若被 AI 忽略，但用户认为值得读，应计入高价值漏判。
         ignored_payload = capture_payload()
@@ -247,7 +285,7 @@ def test_health_and_idempotent_capture() -> None:
         ignored_feedback = client.put(
             f"/api/v1/analyses/{ignored.json()['analysis_id']}/feedback",
             json={
-                "recommendation_accuracy": "too_low",
+                "preferred_recommendation": "selective_read",
                 "time_worthwhile": "yes",
                 "new_knowledge": "much",
                 "summary_quality": "not_sure",
@@ -256,6 +294,7 @@ def test_health_and_idempotent_capture() -> None:
         )
         assert ignored_feedback.status_code == 200
         assert ignored_feedback.json()["ai_recommendation"] == "ignore"
+        assert ignored_feedback.json()["recommendation_accuracy"] == "too_low"
         ignored_stats = client.get("/api/v1/calibration/stats").json()
         assert ignored_stats["feedback_count"] == 2
         assert ignored_stats["high_value_miss_count"] == 1
@@ -312,6 +351,27 @@ def test_health_and_idempotent_capture() -> None:
         client.headers.update({"Authorization": f"Bearer {new_login.json()['access_token']}"})
         assert client.post("/api/v1/auth/logout").status_code == 200
         assert client.get("/api/v1/profile").status_code == 401
+
+
+def test_calibration_suggestions_require_enough_evidence() -> None:
+    """候选规则必须达到样本门槛，并保留用户的确认状态。"""
+
+    feedbacks = [
+        SimpleNamespace(
+            ai_recommendation="selective_read",
+            preferred_recommendation="summary_enough",
+            recommendation_accuracy="too_high",
+            summary_quality="accurate",
+        )
+        for _ in range(20)
+    ]
+    assert _calibration_suggestions(feedbacks[:19], {}) == []
+
+    suggestions = _calibration_suggestions(feedbacks, {})
+    assert [item.id for item in suggestions] == ["reduce_over_recommendation"]
+    assert suggestions[0].status == "pending"
+    accepted = _calibration_suggestions(feedbacks, {"reduce_over_recommendation": "accepted"})
+    assert accepted[0].status == "accepted"
 
 
 def teardown_module() -> None:
