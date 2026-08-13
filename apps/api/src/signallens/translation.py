@@ -56,7 +56,19 @@ def content_source_hash(markdown: str) -> str:
 
 
 def detect_source_language(markdown: str) -> str:
-    """优先读取插件 frontmatter，缺失时以中英文字符比例作保守判断。"""
+    """以正文强特征为准，frontmatter 只在正文特征不足时作为提示。"""
+
+    body = strip_frontmatter(markdown)
+    visible_text = _visible_language_text(body)
+    chinese_count = len(re.findall(r"[\u3400-\u9fff]", visible_text))
+    latin_count = len(re.findall(r"[A-Za-z]", visible_text))
+
+    # 聚合站的页面语言可能来自中文界面而非文章正文。先排除代码、URL 和图片，
+    # 只有正文证据足够强时才覆盖元数据，避免中文技术文章被英文术语误判。
+    if latin_count >= 200 and latin_count > chinese_count * 4:
+        return "en"
+    if chinese_count >= 50 and chinese_count >= latin_count / 2:
+        return "zh-CN"
 
     frontmatter = FRONTMATTER_PATTERN.match(markdown)
     if frontmatter:
@@ -64,14 +76,20 @@ def detect_source_language(markdown: str) -> str:
         if language:
             return language.group(1).replace("_", "-").lower()
 
-    body = strip_frontmatter(markdown)
-    chinese_count = len(re.findall(r"[\u3400-\u9fff]", body))
-    latin_count = len(re.findall(r"[A-Za-z]", body))
     if chinese_count >= 20 and chinese_count >= latin_count / 2:
         return "zh-CN"
     if latin_count >= 40 and latin_count > chinese_count * 2:
         return "en"
     return "unknown"
+
+
+def _visible_language_text(markdown: str) -> str:
+    """移除不代表正文语言的代码、图片地址、URL 和行内代码。"""
+
+    result = re.sub(r"```[\s\S]*?```|~~~[\s\S]*?~~~", " ", markdown)
+    result = re.sub(r"`[^`\n]+`", " ", result)
+    result = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", result)
+    return re.sub(r"https?://[^\s)>\]]+", " ", result)
 
 
 def strip_frontmatter(markdown: str) -> str:

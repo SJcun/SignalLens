@@ -87,3 +87,18 @@ def test_translation_rejects_reordered_block_ids() -> None:
     blocks = split_markdown_blocks("# English title\n\nRead the guide")
     with pytest.raises(ValueError, match="翻译块 ID 不匹配"):
         run_translation_batch(WrongOrderProvider(), blocks)
+
+
+def test_body_language_overrides_misleading_page_metadata() -> None:
+    """聚合站中文页面壳不能把英文正文误判为中文。"""
+
+    english_body = " ".join(
+        ["The evaluation system measures retrieval quality and production reliability."]
+        * 12
+    )
+    misleading_english = f'---\nlanguage: "zh_CN"\n---\n\n{english_body}'
+    assert detect_source_language(misleading_english) == "en"
+
+    chinese_body = "中文技术文章讨论模型评测、Agent 架构和可靠性。" * 20
+    misleading_chinese = f'---\nlanguage: "en"\n---\n\n{chinese_body}'
+    assert detect_source_language(misleading_chinese) == "zh-CN"
