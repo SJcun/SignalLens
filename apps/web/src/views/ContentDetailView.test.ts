@@ -16,7 +16,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('../api', () => apiMocks)
 
 describe('内容详情翻译视图', () => {
-  it('完成翻译后按块展示原文、中文译文和共享代码', async () => {
+  it('完成翻译后展示左右两个连续 Markdown 文档', async () => {
     apiMocks.getProfile.mockResolvedValue({ evaluation_mode: false })
     apiMocks.getContent.mockResolvedValue({
       id: 'content-1',
@@ -89,11 +89,15 @@ describe('内容详情翻译视图', () => {
     await flushPromises()
 
     expect(wrapper.findAll('button').some((button) => button.text() === '只看原文')).toBe(true)
-    expect(wrapper.findAll('.translation-row')).toHaveLength(3)
-    expect(wrapper.findAll('.translation-row.shared')).toHaveLength(1)
-    expect(wrapper.text()).toContain('English title')
-    expect(wrapper.text()).toContain('中文标题')
-    expect(wrapper.text()).toContain('print("ok")')
+    const documents = wrapper.findAll('.translation-document')
+    expect(documents).toHaveLength(2)
+    expect(wrapper.findAll('.translation-row')).toHaveLength(0)
+    expect(documents[0].text()).toContain('English title')
+    expect(documents[0].text()).not.toContain('中文标题')
+    expect(documents[1].text()).toContain('中文标题')
+    expect(documents[1].text()).toContain('阅读指南。')
+    expect(documents[0].text()).toContain('print("ok")')
+    expect(documents[1].text()).toContain('print("ok")')
     wrapper.unmount()
   })
 })

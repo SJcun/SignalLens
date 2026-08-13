@@ -76,16 +76,14 @@ const translation = useMutation({
     await queryClient.invalidateQueries({ queryKey: ['content', contentId] })
   },
 })
-const renderedTranslationBlocks = computed(() => {
+const renderedTranslatedMarkdown = computed(() => {
   const data = content.data.value
-  if (!data?.translation) return []
-  return data.translation.blocks.map((block) => ({
-    ...block,
-    sourceHtml: renderMarkdown(block.source_markdown, data.source_url),
-    translatedHtml: block.translated_markdown
-      ? renderMarkdown(block.translated_markdown, data.source_url)
-      : '',
-  }))
+  if (!data?.translation) return ''
+  // 译文按原块顺序重新组成一篇完整 Markdown；代码、图片等共享块原样保留。
+  const translatedMarkdown = data.translation.blocks
+    .map((block) => block.translated_markdown || block.source_markdown)
+    .join('\n\n')
+  return renderMarkdown(translatedMarkdown, data.source_url)
 })
 const translationButtonText = computed(() => {
   if (translation.isPending.value) return '正在创建任务…'
@@ -398,25 +396,14 @@ const submitFeedback = useMutation({
           v-else-if="showTranslation && content.data.value.translation?.status === 'completed'"
           class="translation-comparison"
         >
-          <div class="translation-headings" aria-hidden="true">
-            <strong>原文</strong>
-            <strong>中文译文</strong>
-          </div>
-          <div
-            v-for="block in renderedTranslationBlocks"
-            :key="block.id"
-            class="translation-row"
-            :class="{ shared: block.shared }"
-          >
-            <div class="translation-cell markdown-body">
-              <span class="translation-mobile-label">原文</span>
-              <div v-html="block.sourceHtml"></div>
-            </div>
-            <div v-if="!block.shared" class="translation-cell markdown-body translated">
-              <span class="translation-mobile-label">中文译文</span>
-              <div v-html="block.translatedHtml"></div>
-            </div>
-          </div>
+          <section class="translation-document">
+            <h3 class="translation-document-title">原文</h3>
+            <div class="markdown-body" v-html="renderedMarkdown"></div>
+          </section>
+          <section class="translation-document translated">
+            <h3 class="translation-document-title">中文译文</h3>
+            <div class="markdown-body" v-html="renderedTranslatedMarkdown"></div>
+          </section>
         </div>
         <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
       </article>
