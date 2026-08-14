@@ -12,6 +12,14 @@ const navigation = [
   { to: '/stats', label: '统计' },
   { to: '/account', label: '账户' },
 ]
+
+/** 内容详情属于 Inbox，进入文章后仍保留对应的主导航选中状态。 */
+function isNavigationActive(target: string): boolean {
+  if (target === '/inbox') {
+    return route.path === '/inbox' || route.path.startsWith('/contents/')
+  }
+  return route.path === target
+}
 </script>
 
 <template>
@@ -25,7 +33,12 @@ const navigation = [
         </span>
       </RouterLink>
       <nav aria-label="主导航">
-        <RouterLink v-for="item in navigation" :key="item.to" :to="item.to">
+        <RouterLink
+          v-for="item in navigation"
+          :key="item.to"
+          :to="item.to"
+          :class="{ 'router-link-active': isNavigationActive(item.to) }"
+        >
           {{ item.label }}
         </RouterLink>
       </nav>

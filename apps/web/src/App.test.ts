@@ -22,4 +22,24 @@ describe('App', () => {
     expect(wrapper.text()).toContain('SignalLens')
     expect(wrapper.text()).toContain('Inbox')
   })
+
+  it('进入内容详情后仍选中 Inbox 导航', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/inbox', component: { template: '<div>Inbox</div>' } },
+        { path: '/contents/:contentId', component: { template: '<div>内容详情</div>' } },
+        { path: '/preferences', component: { template: '<div>阅读偏好</div>' } },
+        { path: '/stats', component: { template: '<div>统计</div>' } },
+        { path: '/account', component: { template: '<div>账户</div>' } },
+      ],
+    })
+    await router.push('/contents/content-1')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    const inboxLink = wrapper.get('nav a[href="/inbox"]')
+
+    expect(inboxLink.classes()).toContain('router-link-active')
+  })
 })
