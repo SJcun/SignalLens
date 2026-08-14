@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
+
+import { initializeTheme, setTheme, type Theme } from './theme'
 
 const route = useRoute()
 const showApplicationShell = computed(() => !route.meta.public)
+const theme = ref<Theme>(initializeTheme())
+const themeToggleLabel = computed(() =>
+  theme.value === 'dark' ? '切换到浅色模式' : '切换到深色模式',
+)
+const themeToggleIcon = computed(() => (theme.value === 'dark' ? '☀' : '☾'))
 
 /** 应用外壳只负责登录后的全局导航，具体业务状态留在各页面。 */
 const navigation = [
@@ -20,6 +27,12 @@ function isNavigationActive(target: string): boolean {
     return route.path === '/inbox' || route.path.startsWith('/contents/')
   }
   return route.path === target
+}
+
+/** 在深色和浅色之间切换，并记住当前浏览器的选择。 */
+function toggleTheme(): void {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  setTheme(theme.value)
 }
 </script>
 
@@ -43,10 +56,32 @@ function isNavigationActive(target: string): boolean {
           {{ item.label }}
         </RouterLink>
       </nav>
+      <button
+        class="theme-toggle"
+        type="button"
+        :aria-label="themeToggleLabel"
+        :title="themeToggleLabel"
+        @click="toggleTheme"
+      >
+        <span aria-hidden="true">{{ themeToggleIcon }}</span>
+        {{ themeToggleLabel }}
+      </button>
     </aside>
     <main class="main-content">
       <RouterView />
     </main>
   </div>
-  <RouterView v-else />
+  <div v-else class="public-page-shell">
+    <button
+      class="theme-toggle public-theme-toggle"
+      type="button"
+      :aria-label="themeToggleLabel"
+      :title="themeToggleLabel"
+      @click="toggleTheme"
+    >
+      <span aria-hidden="true">{{ themeToggleIcon }}</span>
+      {{ themeToggleLabel }}
+    </button>
+    <RouterView />
+  </div>
 </template>
