@@ -8,6 +8,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "pydantic-settings>=2.10,<3",
   "sqlalchemy>=2.0,<3",
+  "tzdata>=2024.1",
   "uvicorn[standard]>=0.35,<1",
 ]
 
@@ -35,4 +36,3 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-

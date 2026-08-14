@@ -7,6 +7,7 @@ import {
   getContent,
   getProfile,
   retryAnalysis,
+  runAnalysisNow,
   saveFeedback,
   translateContent,
   type FeedbackUpdate,
@@ -62,6 +63,32 @@ const retry = useMutation({
     ])
   },
 })
+const runNow = useMutation({
+  mutationFn: () => runAnalysisNow(content.data.value!.analysis_id),
+  onSuccess: async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['content', contentId] }),
+      queryClient.invalidateQueries({ queryKey: ['contents'] }),
+    ])
+  },
+})
+
+/** 将后端 UTC 时间固定按北京时间展示。 */
+function formatScheduleTime(value: string | null): string {
+  if (!value) return '下一个设定时段'
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+function requestRunNow(): void {
+  if (!window.confirm('立即整理会绕过低价时段限制，可能产生更高费用。继续吗？')) return
+  runNow.mutate()
+}
 const renderedMarkdown = computed(() => {
   const data = content.data.value
   return data ? renderMarkdown(data.markdown, data.source_url) : ''
@@ -186,7 +213,23 @@ const submitFeedback = useMutation({
         <a :href="content.data.value.source_url" target="_blank" rel="noreferrer">打开原文 ↗</a>
       </div>
 
-      <div v-if="content.data.value.analysis_status === 'pending'" class="pending-notice">
+      <div v-if="content.data.value.queue.waiting_for_schedule" class="pending-notice">
+        <span>
+          已完成的阶段会安全保留，任务将在
+          {{ formatScheduleTime(content.data.value.queue.next_eligible_at) }}继续整理。
+        </span>
+        <button class="retry-button" :disabled="runNow.isPending.value" @click="requestRunNow">
+          {{ runNow.isPending.value ? '正在提交…' : '立即整理' }}
+        </button>
+        <span v-if="runNow.isError.value">{{ runNow.error.value?.message }}</span>
+      </div>
+      <div
+        v-else-if="content.data.value.analysis_status === 'pending' && content.data.value.queue.execution_mode === 'immediate'"
+        class="pending-notice"
+      >
+        已请求立即整理，正在等待 Worker 领取任务。
+      </div>
+      <div v-else-if="content.data.value.analysis_status === 'pending'" class="pending-notice">
         正文已经成功导入，正在等待 Worker 领取分析任务。
       </div>
       <div v-else-if="content.data.value.analysis_status === 'running'" class="pending-notice">

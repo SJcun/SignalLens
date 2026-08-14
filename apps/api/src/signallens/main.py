@@ -27,6 +27,7 @@ from .models import (
     AdminUser,
     Analysis,
     AnalysisJob,
+    AnalysisSchedule,
     ArticleFeedback,
     AuthSession,
     Content,
@@ -35,8 +36,12 @@ from .models import (
     UserProfileRecord,
     utc_now,
 )
+from .scheduling import DEFAULT_ANALYSIS_WINDOWS, is_within_windows, next_window_start
 from .schemas import (
+    AnalysisQueueState,
     AnalysisResponse,
+    AnalysisScheduleResponse,
+    AnalysisScheduleUpdate,
     CalibrationMatrixCell,
     CalibrationStatsResponse,
     CalibrationSuggestionDecision,
@@ -293,6 +298,30 @@ def update_profile(
     return _profile_response(profile)
 
 
+@app.get("/api/v1/analysis-schedule", response_model=AnalysisScheduleResponse)
+def get_analysis_schedule(
+    session: Annotated[Session, Depends(get_session)],
+) -> AnalysisScheduleResponse:
+    """返回 AI 整理总开关、时段和当前队列状态。"""
+
+    return _schedule_response(session, _get_or_create_analysis_schedule(session))
+
+
+@app.put("/api/v1/analysis-schedule", response_model=AnalysisScheduleResponse)
+def update_analysis_schedule(
+    payload: AnalysisScheduleUpdate,
+    session: Annotated[Session, Depends(get_session)],
+) -> AnalysisScheduleResponse:
+    """原子保存总开关与每日时段，关闭时立即恢复提交即分析。"""
+
+    schedule = _get_or_create_analysis_schedule(session)
+    schedule.enabled = payload.enabled
+    schedule.windows_json = [item.model_dump(mode="json") for item in payload.windows]
+    schedule.updated_at = utc_now()
+    session.commit()
+    return _schedule_response(session, schedule)
+
+
 @app.post(
     "/api/v1/captures",
     response_model=CaptureAccepted,
@@ -331,7 +360,7 @@ def create_capture(
         if analysis is None:
             raise HTTPException(status_code=409, detail="采集记录存在，但分析任务缺失")
         session.commit()
-        return _accepted(existing, analysis)
+        return _accepted(session, existing, analysis)
 
     if payload.capture.quality.level == "failed":
         raise HTTPException(status_code=422, detail="提取失败的内容不能进入分析")
@@ -352,7 +381,7 @@ def create_capture(
     job = AnalysisJob(analysis=analysis)
     session.add_all([content, analysis, job])
     session.commit()
-    return _accepted(content, analysis)
+    return _accepted(session, content, analysis)
 
 
 @app.get("/api/v1/analyses/{analysis_id}", response_model=AnalysisResponse)
@@ -365,7 +394,33 @@ def get_analysis(
     analysis = session.get(Analysis, analysis_id)
     if analysis is None:
         raise HTTPException(status_code=404, detail="分析任务不存在")
-    return _analysis_response(analysis)
+    return _analysis_response(session, analysis)
+
+
+@app.post(
+    "/api/v1/analyses/{analysis_id}/run-now",
+    response_model=CaptureAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def run_analysis_now(
+    analysis_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> CaptureAccepted:
+    """持久化用户的立即整理要求，后续所有阶段绕过时段门禁。"""
+
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="分析任务不存在")
+    if analysis.status not in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="只有等待或进行中的任务可以立即整理")
+    job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis.id))
+    content = session.get(Content, analysis.content_id)
+    if job is None or content is None:
+        raise HTTPException(status_code=409, detail="分析任务关联数据缺失")
+
+    job.immediate_requested_at = job.immediate_requested_at or utc_now()
+    session.commit()
+    return _accepted(session, content, analysis)
 
 
 @app.post(
@@ -402,8 +457,9 @@ def retry_analysis(
     job.stage = "triage"
     job.status = "pending"
     job.last_error = None
+    job.immediate_requested_at = None
     session.commit()
-    return _accepted(content, analysis)
+    return _accepted(session, content, analysis)
 
 
 @app.put(
@@ -604,15 +660,16 @@ def list_contents(
         .scalar_subquery()
     )
     rows = session.execute(
-        select(Content, Analysis, ArticleFeedback)
+        select(Content, Analysis, AnalysisJob, ArticleFeedback)
         .join(Analysis, Analysis.id == latest_analysis_id)
+        .join(AnalysisJob, AnalysisJob.analysis_id == Analysis.id)
         .outerjoin(ArticleFeedback, ArticleFeedback.analysis_id == Analysis.id)
         .order_by(Content.created_at.desc())
         .limit(safe_limit)
     ).all()
     return [
-        _content_summary(content, analysis, feedback)
-        for content, analysis, feedback in rows
+        _content_summary(session, content, analysis, job, feedback)
+        for content, analysis, job, feedback in rows
     ]
 
 
@@ -636,6 +693,9 @@ def get_content(
     feedback = session.scalar(
         select(ArticleFeedback).where(ArticleFeedback.analysis_id == analysis.id)
     )
+    job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis.id))
+    if job is None:
+        raise HTTPException(status_code=409, detail="内容存在，但分析队列任务缺失")
     translation = session.scalar(
         select(ContentTranslation).where(
             ContentTranslation.content_id == content.id,
@@ -643,7 +703,7 @@ def get_content(
         )
     )
     current_source_hash = content_source_hash(content.markdown)
-    summary = _content_summary(content, analysis, feedback)
+    summary = _content_summary(session, content, analysis, job, feedback)
     return ContentDetailResponse(
         **summary.model_dump(),
         markdown=content.markdown,
@@ -729,8 +789,10 @@ def create_or_retry_translation(
 
 
 def _content_summary(
+    session: Session,
     content: Content,
     analysis: Analysis,
+    job: AnalysisJob,
     feedback: ArticleFeedback | None = None,
 ) -> ContentSummaryResponse:
     """从持久化 JSON 中安全提取 Inbox 所需的少量展示字段。"""
@@ -757,6 +819,7 @@ def _content_summary(
         ai_recommendation=ai_recommendation,
         user_recommendation=user_recommendation,
         discovery_type=personal_evaluation.get("discovery_type") or triage.get("discovery_type"),
+        queue=_queue_state(session, analysis, job),
     )
 
 
@@ -869,20 +932,27 @@ def _calibration_suggestions(
     ]
 
 
-def _accepted(content: Content, analysis: Analysis) -> CaptureAccepted:
+def _accepted(session: Session, content: Content, analysis: Analysis) -> CaptureAccepted:
     """统一构造异步采集响应。"""
 
+    job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis.id))
+    if job is None:
+        raise HTTPException(status_code=409, detail="分析队列任务缺失")
     return CaptureAccepted(
         content_id=content.id,
         analysis_id=analysis.id,
         status=analysis.status,
         detail_url=f"/contents/{content.id}",
+        queue=_queue_state(session, analysis, job),
     )
 
 
-def _analysis_response(analysis: Analysis) -> AnalysisResponse:
+def _analysis_response(session: Session, analysis: Analysis) -> AnalysisResponse:
     """统一构造分析状态响应并触发结构化结果校验。"""
 
+    job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis.id))
+    if job is None:
+        raise HTTPException(status_code=409, detail="分析队列任务缺失")
     return AnalysisResponse(
         id=analysis.id,
         content_id=analysis.content_id,
@@ -892,6 +962,90 @@ def _analysis_response(analysis: Analysis) -> AnalysisResponse:
         personal_evaluation=analysis.personal_evaluation_json,
         created_at=analysis.created_at,
         completed_at=analysis.completed_at,
+        queue=_queue_state(session, analysis, job),
+    )
+
+
+def _get_or_create_analysis_schedule(session: Session) -> AnalysisSchedule:
+    """读取全局整理设置；首次访问保持现有的立即分析行为。"""
+
+    schedule = session.get(AnalysisSchedule, "default")
+    if schedule is None:
+        schedule = AnalysisSchedule(
+            id="default",
+            enabled=False,
+            windows_json=[dict(item) for item in DEFAULT_ANALYSIS_WINDOWS],
+        )
+        session.add(schedule)
+        session.commit()
+    return schedule
+
+
+def _schedule_response(
+    session: Session,
+    schedule: AnalysisSchedule,
+) -> AnalysisScheduleResponse:
+    """计算当前是否放行及下一窗口，时间统一从 UTC 转换。"""
+
+    now = utc_now()
+    windows = list(schedule.windows_json)
+    in_window = is_within_windows(now, windows)
+    currently_allowed = not schedule.enabled or in_window
+    scheduled_job_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(AnalysisJob)
+            .where(
+                AnalysisJob.status == "pending",
+                AnalysisJob.immediate_requested_at.is_(None),
+            )
+        )
+        or 0
+    )
+    return AnalysisScheduleResponse(
+        enabled=schedule.enabled,
+        windows=windows,
+        currently_allowed=currently_allowed,
+        next_window_start=(
+            None if currently_allowed else next_window_start(now, windows)
+        ),
+        scheduled_job_count=scheduled_job_count,
+        updated_at=schedule.updated_at,
+    )
+
+
+def _queue_state(
+    session: Session,
+    analysis: Analysis,
+    job: AnalysisJob,
+) -> AnalysisQueueState:
+    """从任务覆盖标记和全局设置推导用户可见的等待原因。"""
+
+    schedule = session.get(AnalysisSchedule, "default")
+    now = utc_now()
+    windows = (
+        list(schedule.windows_json)
+        if schedule is not None
+        else [dict(item) for item in DEFAULT_ANALYSIS_WINDOWS]
+    )
+    schedule_closed = bool(
+        schedule
+        and schedule.enabled
+        and not is_within_windows(now, windows)
+    )
+    waiting = (
+        analysis.status in {"pending", "running"}
+        and job.status == "pending"
+        and job.immediate_requested_at is None
+        and schedule_closed
+    )
+    return AnalysisQueueState(
+        stage=job.stage,
+        execution_mode=(
+            "immediate" if job.immediate_requested_at is not None else "scheduled"
+        ),
+        waiting_for_schedule=waiting,
+        next_eligible_at=next_window_start(now, windows) if waiting else None,
     )
 
 

@@ -2,8 +2,9 @@
 
 import logging
 import time
+from dataclasses import dataclass
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 
 from .analysis.pipeline import (
     AnalysisInput,
@@ -19,11 +20,13 @@ from .database import SessionLocal, create_schema
 from .models import (
     Analysis,
     AnalysisJob,
+    AnalysisSchedule,
     Content,
     ContentTranslation,
     UserProfileRecord,
     utc_now,
 )
+from .scheduling import is_within_windows
 from .settings import get_settings
 from .translation import (
     TRANSLATION_PROMPT_VERSION,
@@ -32,6 +35,17 @@ from .translation import (
 )
 
 LOGGER = logging.getLogger("signallens.worker")
+
+
+@dataclass
+class ClaimedAnalysisJob:
+    """一次原子领取后执行当前阶段所需的持久化输入。"""
+
+    analysis_id: str
+    stage: str
+    content: AnalysisInput
+    triage: TriageContent | None
+    content_analysis: AnalyzeContent | None
 
 
 def pending_job_count() -> int:
@@ -56,20 +70,40 @@ def process_next_job(
     if claimed is None:
         return False
 
-    analysis_id, content = claimed
+    analysis_id = claimed.analysis_id
     user_profile = profile or _load_user_profile()
     try:
-        triage = run_triage(provider, content, user_profile)
-        _save_triage(analysis_id, triage)
-        if triage.decision == "ignore":
-            _complete_analysis(analysis_id)
-            return True
+        stage = claimed.stage
+        triage = claimed.triage
+        content_analysis = claimed.content_analysis
+        while True:
+            # 每个模型请求前都重新检查门禁；窗口关闭后保留当前阶段结果，
+            # 下一窗口从后续阶段继续，避免三阶段跨越高价时段。
+            if stage == "triage":
+                triage = run_triage(provider, claimed.content, user_profile)
+                _save_triage(analysis_id, triage)
+                if triage.decision == "ignore":
+                    _complete_analysis(analysis_id)
+                    return True
+                stage = "analyze"
+            elif stage == "analyze" and triage is not None:
+                content_analysis = run_content_analysis(provider, claimed.content, triage)
+                _save_content_analysis(analysis_id, content_analysis)
+                stage = "evaluate"
+            elif stage == "evaluate" and content_analysis is not None:
+                evaluation = run_personal_evaluation(
+                    provider,
+                    content_analysis,
+                    user_profile,
+                )
+                _save_evaluation(analysis_id, evaluation)
+                return True
+            else:
+                raise RuntimeError(f"分析任务阶段数据不完整：{analysis_id}/{stage}")
 
-        content_analysis = run_content_analysis(provider, content, triage)
-        _save_content_analysis(analysis_id, content_analysis)
-        evaluation = run_personal_evaluation(provider, content_analysis, user_profile)
-        _save_evaluation(analysis_id, evaluation)
-        return True
+            if not _can_continue_analysis(analysis_id):
+                _pause_analysis(analysis_id)
+                return True
     except Exception as exc:
         # 单条模型失败不能结束 Worker；失败状态保留原因，便于后续人工重试。
         _fail_analysis(analysis_id, exc)
@@ -98,15 +132,30 @@ def process_next_translation(provider: StructuredOutputProvider) -> bool:
         return True
 
 
-def _claim_next_job(model: str) -> tuple[str, AnalysisInput] | None:
+def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
     """使用条件更新领取最早任务，防止多个 Worker 重复消费。"""
 
     with SessionLocal.begin() as session:
+        schedule = session.get(AnalysisSchedule, "default")
+        schedule_open = (
+            schedule is None
+            or not schedule.enabled
+            or is_within_windows(utc_now(), list(schedule.windows_json))
+        )
+        candidate_query = select(AnalysisJob.id).where(AnalysisJob.status == "pending")
+        if not schedule_open:
+            candidate_query = candidate_query.where(
+                AnalysisJob.immediate_requested_at.is_not(None)
+            )
         candidate_id = session.scalar(
-            select(AnalysisJob.id)
-            .where(AnalysisJob.status == "pending")
-            .order_by(AnalysisJob.created_at)
-            .limit(1)
+            candidate_query.order_by(
+                case(
+                    (AnalysisJob.immediate_requested_at.is_not(None), 0),
+                    else_=1,
+                ),
+                AnalysisJob.immediate_requested_at,
+                AnalysisJob.created_at,
+            ).limit(1)
         )
         if candidate_id is None:
             return None
@@ -132,14 +181,53 @@ def _claim_next_job(model: str) -> tuple[str, AnalysisInput] | None:
         analysis.status = "running"
         analysis.model = model
         analysis.prompt_version = PROMPT_VERSION
-        return analysis.id, AnalysisInput(
-            title=content.title,
-            source_url=content.source_url,
-            source_type=content.source_type,
-            capture_mode=content.capture_mode,
-            capture_quality=content.capture_quality,
-            markdown=content.markdown,
+        return ClaimedAnalysisJob(
+            analysis_id=analysis.id,
+            stage=job.stage,
+            content=AnalysisInput(
+                title=content.title,
+                source_url=content.source_url,
+                source_type=content.source_type,
+                capture_mode=content.capture_mode,
+                capture_quality=content.capture_quality,
+                markdown=content.markdown,
+            ),
+            triage=(
+                TriageContent.model_validate(analysis.triage_json)
+                if analysis.triage_json
+                else None
+            ),
+            content_analysis=(
+                AnalyzeContent.model_validate(analysis.content_analysis_json)
+                if analysis.content_analysis_json
+                else None
+            ),
         )
+
+
+def _can_continue_analysis(analysis_id: str) -> bool:
+    """在下一阶段发起模型请求前重新读取总开关和当前窗口。"""
+
+    with SessionLocal() as session:
+        job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis_id))
+        if job is None:
+            return False
+        if job.immediate_requested_at is not None:
+            return True
+        schedule = session.get(AnalysisSchedule, "default")
+        return (
+            schedule is None
+            or not schedule.enabled
+            or is_within_windows(utc_now(), list(schedule.windows_json))
+        )
+
+
+def _pause_analysis(analysis_id: str) -> None:
+    """窗口关闭时释放任务领取状态，保留已完成阶段供后续继续。"""
+
+    with SessionLocal.begin() as session:
+        _, job = _load_running_task(session, analysis_id)
+        job.status = "pending"
 
 
 def _claim_next_translation(model: str) -> tuple[str, list[dict]] | None:

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from .analysis.schemas import AnalyzeContent, EvaluateForUser, Recommendation, TriageContent
 
@@ -61,6 +61,19 @@ class CaptureRequest(BaseModel):
     capture: CaptureMetadata
 
 
+class AnalysisQueueState(BaseModel):
+    """Web 展示任务调度原因所需的最小队列状态。"""
+
+    stage: Literal["triage", "analyze", "evaluate", "completed"]
+    execution_mode: Literal["scheduled", "immediate"]
+    waiting_for_schedule: bool
+    next_eligible_at: datetime | None
+
+    _normalize_next_eligible_at = field_validator("next_eligible_at", mode="before")(
+        attach_utc
+    )
+
+
 class CaptureAccepted(BaseModel):
     """内容可靠入库后的异步任务标识。"""
 
@@ -68,6 +81,7 @@ class CaptureAccepted(BaseModel):
     analysis_id: str
     status: Literal["pending", "running", "completed", "failed"]
     detail_url: str
+    queue: AnalysisQueueState
 
 
 class AnalysisResponse(BaseModel):
@@ -81,6 +95,7 @@ class AnalysisResponse(BaseModel):
     personal_evaluation: EvaluateForUser | None
     created_at: datetime
     completed_at: datetime | None
+    queue: AnalysisQueueState
 
     _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
     _normalize_completed_at = field_validator("completed_at", mode="before")(attach_utc)
@@ -103,8 +118,47 @@ class ContentSummaryResponse(BaseModel):
     ai_recommendation: Recommendation | None
     user_recommendation: Recommendation | None
     discovery_type: str | None
+    queue: AnalysisQueueState
 
     _normalize_created_at = field_validator("created_at", mode="before")(attach_utc)
+
+
+class AnalysisWindow(BaseModel):
+    """每天重复的一段北京时间整理窗口。"""
+
+    start: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    end: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+class AnalysisScheduleUpdate(BaseModel):
+    """总开关和每日时段的完整更新请求。"""
+
+    enabled: bool
+    windows: list[AnalysisWindow] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_schedule_windows(self):
+        """统一校验跨午夜和多窗口重叠。"""
+
+        from .scheduling import validate_windows
+
+        validate_windows([item.model_dump() for item in self.windows])
+        return self
+
+
+class AnalysisScheduleResponse(AnalysisScheduleUpdate):
+    """整理设置、当前门禁状态和等待任务数量。"""
+
+    timezone: Literal["Asia/Shanghai"] = "Asia/Shanghai"
+    currently_allowed: bool
+    next_window_start: datetime | None
+    scheduled_job_count: int
+    updated_at: datetime
+
+    _normalize_next_window_start = field_validator("next_window_start", mode="before")(
+        attach_utc
+    )
+    _normalize_updated_at = field_validator("updated_at", mode="before")(attach_utc)
 
 
 class KnownTopicPayload(BaseModel):

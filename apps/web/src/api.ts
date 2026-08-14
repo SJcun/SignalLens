@@ -32,6 +32,28 @@ export interface GeneratedPluginKey {
 }
 
 export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+export interface AnalysisQueueState {
+  stage: 'triage' | 'analyze' | 'evaluate' | 'completed'
+  execution_mode: 'scheduled' | 'immediate'
+  waiting_for_schedule: boolean
+  next_eligible_at: string | null
+}
+
+export interface AnalysisWindow {
+  start: string
+  end: string
+}
+
+export interface AnalysisSchedule {
+  enabled: boolean
+  windows: AnalysisWindow[]
+  timezone: 'Asia/Shanghai'
+  currently_allowed: boolean
+  next_window_start: string | null
+  scheduled_job_count: number
+  updated_at: string
+}
 export type Recommendation = 'ignore' | 'summary_enough' | 'selective_read' | 'deep_read'
 
 export interface TriageResult {
@@ -161,6 +183,7 @@ export interface ContentSummary {
   ai_recommendation: Recommendation | null
   user_recommendation: Recommendation | null
   discovery_type: string | null
+  queue: AnalysisQueueState
 }
 
 export interface TranslationBlock {
@@ -201,6 +224,7 @@ export interface CaptureAccepted {
   analysis_id: string
   status: AnalysisStatus
   detail_url: string
+  queue: AnalysisQueueState
 }
 
 /** 统一处理非成功响应，保留后端给出的可读错误。 */
@@ -303,6 +327,33 @@ export async function retryAnalysis(analysisId: string): Promise<CaptureAccepted
     method: 'POST',
   })
   return apiResponse<CaptureAccepted>(response)
+}
+
+/** 将等待或进行中的任务标记为用户明确要求立即整理。 */
+export async function runAnalysisNow(analysisId: string): Promise<CaptureAccepted> {
+  const response = await authenticatedFetch(
+    `/api/v1/analyses/${encodeURIComponent(analysisId)}/run-now`,
+    { method: 'POST' },
+  )
+  return apiResponse<CaptureAccepted>(response)
+}
+
+/** 获取 AI 整理总开关、每日窗口和当前等待数量。 */
+export async function getAnalysisSchedule(): Promise<AnalysisSchedule> {
+  const response = await authenticatedFetch('/api/v1/analysis-schedule')
+  return apiResponse<AnalysisSchedule>(response)
+}
+
+/** 保存完整整理设置；总开关切换也通过此接口立即持久化。 */
+export async function updateAnalysisSchedule(
+  payload: Pick<AnalysisSchedule, 'enabled' | 'windows'>,
+): Promise<AnalysisSchedule> {
+  const response = await authenticatedFetch('/api/v1/analysis-schedule', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return apiResponse<AnalysisSchedule>(response)
 }
 
 /** 获取初始问卷和当前评测模式。 */

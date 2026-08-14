@@ -9,6 +9,7 @@ const showApplicationShell = computed(() => !route.meta.public)
 const navigation = [
   { to: '/inbox', label: 'Inbox' },
   { to: '/preferences', label: '阅读偏好' },
+  { to: '/analysis-schedule', label: '整理设置' },
   { to: '/stats', label: '统计' },
   { to: '/account', label: '账户' },
 ]

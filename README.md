@@ -16,10 +16,10 @@ SignalLens 是一个以“AI 阅读分诊”为核心的内容消费助手。它
 | 模块 | 已实现 | 尚未实现 |
 | --- | --- | --- |
 | 浏览器插件 | 插件 Key 配置、网页正文提取、选区/区域/整页提取、质量判断、Markdown/JSON 导出、鉴权提交 | 分析结果摘要 |
-| 后端 API | 单用户登录与改密、可撤销 Web 会话、最小权限插件 Key、内容采集与去重、分析状态、英文正文翻译任务、显式用户画像、人工反馈快照、校准统计 | 画像修改建议 |
+| 后端 API | 单用户登录与改密、可撤销 Web 会话、最小权限插件 Key、内容采集与去重、分析状态、每日 AI 整理时段与立即整理、英文正文翻译任务、显式用户画像、人工反馈快照、校准统计 | 画像修改建议 |
 | 数据层 | SQLite、WAL、内容/分析/翻译任务持久化、已有重复数据迁移 | 正式 Alembic 迁移体系 |
-| Worker | OpenAI/DeepSeek JSON 输出适配、JSON 截断精简重试、原子任务领取、三阶段分析、Markdown 分块翻译与断点续跑、失败隔离 | 任务级退避重试、超时任务恢复 |
-| Web | 登录、改密、插件 Key 管理、用户修正优先的 Inbox 分类、阅读建议、Markdown 阅读/源码视图、英文原文与中文译文对照、初始问卷、评测开关、阅读后反馈、四级校准矩阵和规则候选确认 | AI 案例级差异解释、忽略内容抽检 |
+| Worker | OpenAI/DeepSeek JSON 输出适配、JSON 截断精简重试、原子任务领取、按低价时段分阶段执行、三阶段分析、Markdown 分块翻译与断点续跑、失败隔离 | 任务级退避重试、超时任务恢复 |
+| Web | 登录、改密、插件 Key 管理、AI 整理总开关与每日时段、等待任务立即整理、用户修正优先的 Inbox 分类、阅读建议、Markdown 阅读/源码视图、英文原文与中文译文对照、初始问卷、评测开关、阅读后反馈、四级校准矩阵和规则候选确认 | AI 案例级差异解释、忽略内容抽检 |
 | 部署 | Dockerfile、Compose、Nginx 示例 | 当前开发机未安装 Docker，容器尚未实机验证 |
 
 ## 系统结构
@@ -210,7 +210,10 @@ data/signallens.db
 | `GET` | `/api/v1/contents/{content_id}` | 获取 Markdown 和完整分析字段 |
 | `POST` | `/api/v1/contents/{content_id}/translation` | 幂等创建或重试英文正文翻译 |
 | `GET` | `/api/v1/analyses/{analysis_id}` | 查询分析任务状态 |
+| `POST` | `/api/v1/analyses/{analysis_id}/run-now` | 让等待任务绕过整理时段立即执行 |
 | `POST` | `/api/v1/analyses/{analysis_id}/retry` | 重新执行失败的分析任务 |
+| `GET` | `/api/v1/analysis-schedule` | 获取 AI 整理总开关、时段和队列状态 |
+| `PUT` | `/api/v1/analysis-schedule` | 保存 AI 整理总开关和每日时段 |
 | `GET` | `/api/v1/profile` | 获取初始问卷和评测模式 |
 | `PUT` | `/api/v1/profile` | 保存显式用户画像 |
 | `PUT` | `/api/v1/analyses/{analysis_id}/feedback` | 新增或更新阅读后评价 |
@@ -259,6 +262,8 @@ Worker 会按创建时间领取待处理任务，并依次执行：
 1. `TriageContent`：快速判断内容信号和探索价值；
 2. `AnalyzeContent`：只分析文章本身，保留反方观点、限制和未验证主张；
 3. `EvaluateForUser`：生成阅读动作和阅读计划。
+
+“整理设置”页可以开启低价时段模式并配置一个或多个北京时间窗口。文章正文仍会在插件提交后立即可靠入库；Worker 只在允许窗口内发起每个分析阶段的模型请求。窗口关闭时已完成阶段会保留到下一窗口，用户也可以在内容详情页明确选择“立即整理”。关闭总开关会恢复提交后立即分析；若当前有等待任务，Web 会先提示这些任务可能在高价时段开始执行。正文翻译是单独的用户主动操作，不受整理时段限制。
 
 模型输出必须通过 Pydantic/JSON Schema 校验。单条任务失败会标记为 `failed`，不会丢失原始正文，也不会终止 Worker；内容详情页可以将失败任务重新放回队列。手动提交的有效内容不会被快速分诊静默拦截。
 

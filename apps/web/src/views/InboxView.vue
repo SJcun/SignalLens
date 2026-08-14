@@ -46,6 +46,16 @@ const statusText: Record<ContentSummary['analysis_status'], string> = {
   failed: '分析失败',
 }
 
+/** 在基础分析状态上补充定时等待和用户立即要求。 */
+function analysisStatusText(item: ContentSummary): string {
+  if (item.queue.waiting_for_schedule) return '等待整理时段'
+  if (
+    item.queue.execution_mode === 'immediate'
+    && (item.analysis_status === 'pending' || item.analysis_status === 'running')
+  ) return '立即整理'
+  return statusText[item.analysis_status]
+}
+
 /** 使用用户本地时区展示采集时间。 */
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -117,13 +127,16 @@ function correctionText(item: ContentSummary): string | null {
             <h2>{{ item.title }}</h2>
           </div>
           <span class="analysis-status" :class="item.analysis_status">
-            {{ statusText[item.analysis_status] }}
+            {{ analysisStatusText(item) }}
           </span>
         </div>
-        <p>{{ item.one_sentence_summary || '正文已保存，等待 AI 分诊结果。' }}</p>
+        <p>{{ item.one_sentence_summary || (item.queue.waiting_for_schedule ? '正文已保存，将在设定时段进行 AI 分诊。' : '正文已保存，等待 AI 分诊结果。') }}</p>
         <div class="card-footer">
           <span v-if="item.author">{{ item.author }}</span>
           <span>提取质量：{{ item.capture_quality }}</span>
+          <span v-if="item.queue.next_eligible_at">
+            下次整理：{{ formatTime(item.queue.next_eligible_at) }}
+          </span>
           <span v-if="correctionText(item)" class="correction-tag">
             {{ correctionText(item) }}
           </span>

@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,8 @@ os.environ["SIGNALLENS_BOOTSTRAP_PASSWORD_FILE"] = str(TEST_BOOTSTRAP)
 
 from fastapi.testclient import TestClient
 
+import signallens.main as main_module
+import signallens.worker as worker_module
 from signallens.analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
 from signallens.database import engine
 from signallens.main import _calibration_suggestions, app
@@ -133,8 +136,12 @@ def capture_payload() -> dict:
     }
 
 
-def test_health_and_idempotent_capture() -> None:
+def test_health_and_idempotent_capture(monkeypatch) -> None:
     """同一网页的不同提交只保留一条内容，并返回北京时间可解析的时间。"""
+
+    fixed_now = datetime(2026, 8, 14, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(main_module, "utc_now", lambda: fixed_now)
+    monkeypatch.setattr(worker_module, "utc_now", lambda: fixed_now)
 
     with TestClient(app) as client:
         assert client.get("/api/v1/health").json()["status"] == "ok"
@@ -179,6 +186,22 @@ def test_health_and_idempotent_capture() -> None:
         assert worker_profile.focus_topics == ["AI 工程", "软件架构"]
         assert worker_profile.known_topics == ["Python（advanced）"]
 
+        default_schedule = client.get("/api/v1/analysis-schedule")
+        assert default_schedule.status_code == 200
+        assert default_schedule.json()["enabled"] is False
+        assert default_schedule.json()["currently_allowed"] is True
+        assert client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": True, "windows": [{"start": "08:00", "end": "08:00"}]},
+        ).status_code == 422
+        enabled_schedule = client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": True, "windows": [{"start": "00:00", "end": "08:00"}]},
+        )
+        assert enabled_schedule.status_code == 200
+        assert enabled_schedule.json()["currently_allowed"] is False
+        assert enabled_schedule.json()["next_window_start"] == "2026-08-14T16:00:00Z"
+
         admin_authorization = client.headers["Authorization"]
         first_key = client.post("/api/v1/plugin-key")
         assert first_key.status_code == 200
@@ -193,6 +216,7 @@ def test_health_and_idempotent_capture() -> None:
         assert client.get("/api/v1/profile").status_code == 401
         assert client.post("/api/v1/captures", json=capture_payload()).status_code == 401
         client.headers["Authorization"] = f"Bearer {second_key}"
+        assert client.get("/api/v1/analysis-schedule").status_code == 401
         first = client.post("/api/v1/captures", json=capture_payload())
         client.headers["Authorization"] = admin_authorization
         repeated_payload = capture_payload()
@@ -218,6 +242,18 @@ def test_health_and_idempotent_capture() -> None:
         detail = client.get(f"/api/v1/contents/{first.json()['content_id']}")
         assert detail.status_code == 200
         assert detail.json()["markdown"] == "# 测试\n\n更新后的正文。"
+        assert detail.json()["queue"]["waiting_for_schedule"] is True
+
+        # 时段外普通任务不会调用模型；立即整理标记持久化且接口幂等。
+        assert process_next_job(FakeProvider()) is False
+        immediate = client.post(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/run-now"
+        )
+        assert immediate.status_code == 202
+        assert immediate.json()["queue"]["execution_mode"] == "immediate"
+        assert client.post(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/run-now"
+        ).status_code == 202
 
         # 即使测试模型建议忽略，手动采集仍必须继续完成三阶段分析。
         assert process_next_job(FakeProvider()) is True
@@ -230,6 +266,14 @@ def test_health_and_idempotent_capture() -> None:
         assert completed.json()["ai_recommendation"] == "selective_read"
         assert completed.json()["user_recommendation"] is None
         assert completed.json()["feedback"] is None
+
+        # 一键关闭定时模式后恢复提交即分析，同时保留原窗口配置。
+        disabled_schedule = client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": False, "windows": [{"start": "00:00", "end": "08:00"}]},
+        )
+        assert disabled_schedule.status_code == 200
+        assert disabled_schedule.json()["currently_allowed"] is True
 
         feedback = client.put(
             f"/api/v1/analyses/{first.json()['analysis_id']}/feedback",
@@ -299,6 +343,55 @@ def test_health_and_idempotent_capture() -> None:
         assert corrected_stats["major_error_count"] == 0
         assert corrected_stats["suggestions"] == []
 
+        # 三阶段之间重新检查窗口；关闭后保留初筛结果并从正文分析继续。
+        client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": True, "windows": [{"start": "00:00", "end": "08:00"}]},
+        )
+        staged_payload = capture_payload()
+        staged_payload["capture_id"] = "capture-test-stage-pause"
+        staged_payload["source"]["url"] = "https://example.com/stage-pause"
+        staged = client.post("/api/v1/captures", json=staged_payload)
+        stage_times = iter(
+            [
+                datetime(2026, 8, 13, 17, 0, tzinfo=UTC),
+                datetime(2026, 8, 14, 0, 0, tzinfo=UTC),
+            ]
+        )
+        with monkeypatch.context() as stage_patch:
+            stage_patch.setattr(worker_module, "utc_now", lambda: next(stage_times))
+            assert process_next_job(FakeProvider()) is True
+        staged_detail = client.get(
+            f"/api/v1/contents/{staged.json()['content_id']}"
+        ).json()
+        assert staged_detail["analysis_status"] == "running"
+        assert staged_detail["triage"] is not None
+        assert staged_detail["content_analysis"] is None
+        assert staged_detail["queue"]["stage"] == "analyze"
+        assert staged_detail["queue"]["waiting_for_schedule"] is True
+        assert client.post(
+            f"/api/v1/analyses/{staged.json()['analysis_id']}/run-now"
+        ).status_code == 202
+        assert process_next_job(FakeProvider()) is True
+        assert client.get(
+            f"/api/v1/analyses/{staged.json()['analysis_id']}"
+        ).json()["status"] == "completed"
+        released_payload = capture_payload()
+        released_payload["capture_id"] = "capture-test-switch-release"
+        released_payload["source"]["url"] = "https://example.com/switch-release"
+        released = client.post("/api/v1/captures", json=released_payload)
+        assert released.status_code == 202
+        assert process_next_job(FakeProvider()) is False
+        switched_off = client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": False, "windows": [{"start": "00:00", "end": "08:00"}]},
+        )
+        assert switched_off.json()["currently_allowed"] is True
+        assert process_next_job(FakeProvider()) is True
+        assert client.get(
+            f"/api/v1/analyses/{released.json()['analysis_id']}"
+        ).json()["status"] == "completed"
+
         # 自动采集若被 AI 忽略，但用户认为值得读，应计入高价值漏判。
         ignored_payload = capture_payload()
         ignored_payload["capture_id"] = "capture-test-ignored"
@@ -328,6 +421,9 @@ def test_health_and_idempotent_capture() -> None:
             f"/api/v1/analyses/{first.json()['analysis_id']}/retry"
         )
         assert completed_retry_attempt.status_code == 409
+        assert client.post(
+            f"/api/v1/analyses/{first.json()['analysis_id']}/run-now"
+        ).status_code == 409
 
         failed_payload = capture_payload()
         failed_payload["capture_id"] = "capture-test-failed"

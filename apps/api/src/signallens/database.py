@@ -63,6 +63,7 @@ def create_schema() -> None:
         AdminUser,
         Analysis,
         AnalysisJob,
+        AnalysisSchedule,
         ArticleFeedback,
         AuthSession,
         Content,
@@ -74,6 +75,7 @@ def create_schema() -> None:
     # 这些模型虽未参与下方迁移逻辑，但必须在 create_all 前导入并注册元数据。
     _ = (
         AdminUser,
+        AnalysisSchedule,
         ArticleFeedback,
         AuthSession,
         ContentTranslation,
@@ -85,6 +87,7 @@ def create_schema() -> None:
     # create_all 不会修改旧表；历史反馈保留原偏差结论，新反馈开始记录用户明确等级。
     _add_sqlite_column("article_feedback", "preferred_recommendation", "VARCHAR(32)")
     _add_sqlite_column("user_profile", "calibration_decisions_json", "JSON")
+    _add_sqlite_column("analysis_jobs", "immediate_requested_at", "DATETIME")
 
     with SessionLocal.begin() as session:
         # 早期版本按随机 capture_id 保存，可能为同一网页创建多条内容。

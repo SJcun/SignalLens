@@ -73,9 +73,30 @@ class AnalysisJob(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 非空表示用户明确要求绕过低价时段；时间用于立即任务之间保持先来先服务。
+    immediate_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     analysis: Mapped[Analysis] = relationship(back_populates="job")
+
+
+class AnalysisSchedule(Base):
+    """单用户全局 AI 整理时段设置。"""
+
+    __tablename__ = "analysis_schedule"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="default")
+    # 关闭后恢复提交即分析，但保留窗口配置以便下次一键开启。
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    windows_json: Mapped[list] = mapped_column(
+        JSON,
+        default=lambda: [{"start": "00:00", "end": "08:00"}],
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
 
 
 class ContentTranslation(Base):

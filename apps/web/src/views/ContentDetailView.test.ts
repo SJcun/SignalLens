@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   getContent: vi.fn(),
   getProfile: vi.fn(),
   retryAnalysis: vi.fn(),
+  runAnalysisNow: vi.fn(),
   saveFeedback: vi.fn(),
   translateContent: vi.fn(),
 }))
@@ -33,6 +34,12 @@ describe('内容详情翻译视图', () => {
       ai_recommendation: null,
       user_recommendation: null,
       discovery_type: null,
+      queue: {
+        stage: 'completed',
+        execution_mode: 'scheduled',
+        waiting_for_schedule: false,
+        next_eligible_at: null,
+      },
       markdown: '# English title\n\nRead the guide.\n\n```python\nprint("ok")\n```',
       source_language: 'en',
       triage: null,

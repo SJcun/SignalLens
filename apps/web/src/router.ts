@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import { hasAccessToken } from './auth'
 import AccountView from './views/AccountView.vue'
+import AnalysisScheduleView from './views/AnalysisScheduleView.vue'
 import ContentDetailView from './views/ContentDetailView.vue'
 import InboxView from './views/InboxView.vue'
 import LoginView from './views/LoginView.vue'
@@ -16,6 +17,7 @@ export const router = createRouter({
     { path: '/inbox', component: InboxView },
     { path: '/contents/:contentId', component: ContentDetailView },
     { path: '/preferences', component: PreferencesView },
+    { path: '/analysis-schedule', component: AnalysisScheduleView },
     { path: '/stats', component: StatsView },
     { path: '/account', component: AccountView },
     { path: '/login', component: LoginView, meta: { public: true } },
