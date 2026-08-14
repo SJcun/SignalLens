@@ -3,26 +3,13 @@
  * 完整门禁（触发回退、多引擎比较）在阶段 3 实现（V2 §10）。
  */
 import type { QualityLevel, QualityReport } from '../shared/types';
+import { countMarkdownTables } from '../markdown/metrics';
 
 // 登录墙强信号关键词（避免正文正常提到"登录"造成误报）
 const LOGIN_KEYWORDS = [
   '请登录', '登录后', '登录账号', '登录会员', '登录查看', '登录阅读',
   'sign in', 'login to', '会员专享', '付费阅读', '订阅后可', '加入会员', '开通会员',
 ];
-
-const countTables = (md: string): number => {
-  let tables = 0;
-  let inTable = false;
-  for (const line of md.split('\n')) {
-    if (/^\|/.test(line)) {
-      if (!inTable) tables++;
-      inTable = true;
-    } else {
-      inTable = false;
-    }
-  }
-  return tables;
-};
 
 export function computeQuality(
   md: string,
@@ -37,7 +24,7 @@ export function computeQuality(
     linkRatio: md.length ? Math.round((linkTextLen / md.length) * 100) : 0,
     headings: (md.match(/^#{1,6} /gm) || []).length,
     codeBlocks: Math.floor((md.match(/```/g) || []).length / 2),
-    tables: countTables(md),
+    tables: countMarkdownTables(md),
     images: (md.match(/!\[[^\]]*\]\([^)]*\)/g) || []).length,
   };
 

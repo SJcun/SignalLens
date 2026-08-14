@@ -1,6 +1,7 @@
 import { buildCapture } from '../shared/capture'
 import { WEB_BASE_URL } from '../shared/config'
 import { buildExportJson, type QualityLevel } from '../shared/export'
+import { countMarkdownTables } from '../markdown/metrics'
 
 interface PopupResult {
   ok: boolean
@@ -298,7 +299,7 @@ function downloadJson(): void {
     extraction: { engine: state.engineId },
     metrics: {
       codeBlocks: Math.floor((state.md.match(/```/g) || []).length / 2),
-      tables: state.md.split('\n').filter((line) => /^\|/.test(line)).length,
+      tables: countMarkdownTables(state.md),
     },
   })
   const url = `data:application/json;charset=utf-8,${encodeURIComponent(json)}`

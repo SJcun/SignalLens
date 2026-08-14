@@ -106,7 +106,7 @@ main { flex: 1; overflow: auto; }
 #rendered pre { background: #f6f8fa; border-radius: 6px; padding: 12px; overflow: auto; margin: 0.8em 0; }
 #rendered pre code { background: none; padding: 0; }
 #rendered ul, #rendered ol { padding-left: 24px; margin: 0.6em 0; }
-#rendered table { border-collapse: collapse; margin: 0.8em 0; }
+#rendered table { display: block; width: max-content; max-width: 100%; border-collapse: collapse; margin: 0.8em 0; overflow-x: auto; }
 #rendered th, #rendered td { border: 1px solid var(--border); padding: 6px 12px; }
 #rendered th { background: #f6f8fa; }
 #rendered img { max-width: 100%; }

@@ -8,6 +8,7 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { buildExportJson, type QualityLevel } from '../shared/export';
+import { countMarkdownTables } from '../markdown/metrics';
 
 interface PreviewData {
   title: string;
@@ -127,7 +128,7 @@ el.downloadJson.addEventListener('click', () => {
     markdown: data.md,
     quality: { level: (data.quality || 'unknown') as QualityLevel, warnings: data.warnings || [] },
     extraction: { engine: data.engineId || 'unknown' },
-    metrics: { codeBlocks, tables: 0 },
+    metrics: { codeBlocks, tables: countMarkdownTables(data.md) },
   });
   const url = 'data:application/json;charset=utf-8,' + encodeURIComponent(json);
   void chrome.downloads.download({

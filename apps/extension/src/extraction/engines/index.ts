@@ -10,6 +10,7 @@ export { runFullPage, fullPageEngineId } from './full-page-engine';
 export { extractPage } from '../orchestrator';
 export { computeQuality } from '../quality-gate';
 export { makeTurndown } from '../../markdown/turndown-service';
+export { countMarkdownTables } from '../../markdown/metrics';
 export { removeNoise, NOISE_SELECTORS } from '../../normalize/sanitize';
 export { absolutize } from '../../normalize/links';
 export { preserveCodeLanguage } from '../../normalize/code';
