@@ -211,6 +211,7 @@ p { color: var(--body-text); line-height: 1.7; }
 .guided-section { margin: 18px 0; padding: 16px 18px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; }
 .guided-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .guided-section-title { margin: 0; color: var(--heading); font-size: 21px; line-height: 1.35; }
+.comparison-section-title { margin: 0; color: var(--heading); font-size: 18px; line-height: 1.4; }
 .guided-action-badge { flex: none; padding: 3px 9px; color: var(--accent-contrast); background: var(--accent); border-radius: 6px; font-size: 12px; font-weight: 600; }
 .guided-action-deep_read { border-color: var(--success-border); background: var(--evaluation-background); }
 .guided-action-deep_read .guided-action-badge { background: var(--warning-text); color: #241a08; }

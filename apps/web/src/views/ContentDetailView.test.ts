@@ -265,3 +265,281 @@ describe('内容详情引导阅读流', () => {
     wrapper.unmount()
   })
 })
+
+/** 英文引导流文章：正文、章节行号与译文块行号一一对应。 */
+function guidedEnglishFlowDetail(): ContentDetail {
+  return {
+    id: 'content-guided-en',
+    title: 'Guided Flow Article',
+    author: null,
+    source_url: 'https://example.com/guided-en',
+    source_type: 'web',
+    capture_quality: 'good',
+    created_at: '2026-08-14T00:00:00Z',
+    analysis_id: 'analysis-guided-en',
+    analysis_status: 'completed',
+    one_sentence_summary: '文章摘要。',
+    recommendation: 'selective_read',
+    ai_recommendation: 'selective_read',
+    user_recommendation: null,
+    discovery_type: 'adjacent',
+    queue: {
+      stage: 'completed',
+      execution_mode: 'scheduled',
+      waiting_for_schedule: false,
+      next_eligible_at: null,
+    },
+    markdown: [
+      '# Guided Flow Article',
+      '',
+      'Intro text.',
+      '',
+      '## First Chapter',
+      '',
+      'First chapter body.',
+      '',
+      '## Second Chapter',
+      '',
+      'Second chapter body.',
+      '',
+      '## Third Chapter',
+      '',
+      'Third chapter body.',
+    ].join('\n'),
+    source_language: 'en',
+    translation: {
+      id: 'translation-guided-en',
+      status: 'completed',
+      source_language: 'en',
+      target_language: 'zh-CN',
+      completed_blocks: 8,
+      total_blocks: 8,
+      model: 'test-model',
+      prompt_version: 'translation-v0.1',
+      last_error: null,
+      created_at: '2026-08-14T00:00:00Z',
+      completed_at: '2026-08-14T00:01:00Z',
+      blocks: [
+        {
+          id: 'b1',
+          kind: 'heading',
+          source_markdown: '# Guided Flow Article',
+          translated_markdown: '# 引导流测试文章',
+          shared: false,
+          start_line: 0,
+          end_line: 1,
+        },
+        {
+          id: 'b2',
+          kind: 'paragraph',
+          source_markdown: 'Intro text.',
+          translated_markdown: '导语译文。',
+          shared: false,
+          start_line: 2,
+          end_line: 3,
+        },
+        {
+          id: 'b3',
+          kind: 'heading',
+          source_markdown: '## First Chapter',
+          translated_markdown: '## 第一章',
+          shared: false,
+          start_line: 4,
+          end_line: 5,
+        },
+        {
+          id: 'b4',
+          kind: 'paragraph',
+          source_markdown: 'First chapter body.',
+          translated_markdown: '第一章正文译文。',
+          shared: false,
+          start_line: 6,
+          end_line: 7,
+        },
+        {
+          id: 'b5',
+          kind: 'heading',
+          source_markdown: '## Second Chapter',
+          translated_markdown: '## 第二章',
+          shared: false,
+          start_line: 8,
+          end_line: 9,
+        },
+        {
+          id: 'b6',
+          kind: 'paragraph',
+          source_markdown: 'Second chapter body.',
+          translated_markdown: '第二章正文译文。',
+          shared: false,
+          start_line: 10,
+          end_line: 11,
+        },
+        {
+          id: 'b7',
+          kind: 'heading',
+          source_markdown: '## Third Chapter',
+          translated_markdown: '## 第三章',
+          shared: false,
+          start_line: 12,
+          end_line: 13,
+        },
+        {
+          id: 'b8',
+          kind: 'paragraph',
+          source_markdown: 'Third chapter body.',
+          translated_markdown: '第三章正文译文。',
+          shared: false,
+          start_line: 14,
+          end_line: 15,
+        },
+      ],
+    },
+    triage: null,
+    content_analysis: {
+      one_sentence_summary: '文章摘要。',
+      summary: '整体摘要。',
+      content_map: [
+        { section_ref: 'sec-001', title: '第一章', summary: '第一章摘要。' },
+        { section_ref: 'sec-002', title: '第二章', summary: '第二章摘要。' },
+        { section_ref: 'sec-003', title: '第三章', summary: '第三章摘要。' },
+      ],
+      key_points: [],
+      counterarguments: [],
+      limitations: [],
+      unresolved_questions: [],
+      unverified_claims: [],
+    },
+    personal_evaluation: {
+      relevance: 'medium',
+      knowledge_overlap: 'low',
+      known_or_redundant: false,
+      novel_information: [],
+      exploration_value: 'medium',
+      perspective_diversity: 'medium',
+      discovery_type: 'adjacent',
+      recommendation: 'selective_read',
+      recommendation_reason: '部分章节值得亲自阅读。',
+      why_outside_profile: null,
+      reading_plan: [
+        { section_ref: 'sec-001', section: '第一章', action: 'skip', reason: '背景介绍可跳过。' },
+        { section_ref: 'sec-002', section: '第二章', action: 'skim', reason: '只需了解结论。' },
+        { section_ref: 'sec-003', section: '第三章', action: 'deep_read', reason: '关键论证需要精读。' },
+      ],
+    },
+    feedback: null,
+    section_index: {
+      primary_heading_level: 2,
+      sections: [
+        { section_ref: 'sec-001', level: 2, title: 'First Chapter', order: 1, start_line: 4, end_line: 8 },
+        { section_ref: 'sec-002', level: 2, title: 'Second Chapter', order: 2, start_line: 8, end_line: 12 },
+        { section_ref: 'sec-003', level: 2, title: 'Third Chapter', order: 3, start_line: 12, end_line: 15 },
+      ],
+    },
+    guided_flow_available: true,
+  }
+}
+
+describe('内容详情引导流与译文共存', () => {
+  it('翻译完成后保留原文引导流，不自动切换对照视图', async () => {
+    const wrapper = await mountGuidedFlow(guidedEnglishFlowDetail())
+
+    // 没有自动切到双文档对照视图，按钮保留"中英对照"入口。
+    expect(wrapper.findAll('.translation-document')).toHaveLength(0)
+    expect(
+      wrapper.findAll('button').some((button) => button.text() === '中英对照'),
+    ).toBe(true)
+
+    // 上下文块与章节正文保持原文，选择性阅读折叠行为不变。
+    expect(wrapper.find('.guided-context').text()).toContain('Intro text.')
+    expect(wrapper.find('.guided-context').text()).not.toContain('导语译文。')
+    const sections = wrapper.findAll('.guided-section')
+    expect(sections).toHaveLength(3)
+    expect(sections[0].text()).toContain('First Chapter')
+    expect(sections[0].text()).toContain('跳过')
+    expect(sections[0].text()).toContain('背景介绍可跳过。')
+    expect(sections[0].text()).not.toContain('First chapter body.')
+
+    // skip 章节展开后展示原文。
+    await sections[0].find('button.guided-expand').trigger('click')
+    expect(sections[0].text()).toContain('First chapter body.')
+
+    // deep_read 章节原位展示原文。
+    expect(sections[2].text()).toContain('精读')
+    expect(sections[2].text()).toContain('Third chapter body.')
+    expect(sections[2].text()).not.toContain('第三章正文译文。')
+    wrapper.unmount()
+  })
+
+  it('中英对照视图左右两侧都按章节标注选择性阅读动作', async () => {
+    const wrapper = await mountGuidedFlow(guidedEnglishFlowDetail())
+
+    const toggleButton = wrapper.findAll('button').find((button) => button.text() === '中英对照')
+    expect(toggleButton).toBeDefined()
+    await toggleButton!.trigger('click')
+
+    const documents = wrapper.findAll('.translation-document')
+    expect(documents).toHaveLength(2)
+
+    // 左侧原文按章节标注：徽章、原文标题与正文都在。
+    const sourceSections = documents[0].findAll('.guided-section')
+    expect(sourceSections).toHaveLength(3)
+    expect(
+      sourceSections.map((section) => section.find('.guided-action-badge').text()),
+    ).toEqual(['跳过', '浏览', '精读'])
+    expect(sourceSections[0].text()).toContain('First Chapter')
+    expect(sourceSections[0].text()).toContain('First chapter body.')
+    expect(sourceSections[0].text()).not.toContain('第一章正文译文。')
+
+    // 右侧译文同样按章节标注：徽章、译文标题与译文正文都在。
+    const translatedSections = documents[1].findAll('.guided-section')
+    expect(translatedSections).toHaveLength(3)
+    expect(
+      translatedSections.map((section) => section.find('.guided-action-badge').text()),
+    ).toEqual(['跳过', '浏览', '精读'])
+    expect(translatedSections[0].text()).toContain('第一章')
+    expect(translatedSections[0].text()).toContain('第一章正文译文。')
+    expect(translatedSections[0].text()).not.toContain('First chapter body.')
+
+    // 两侧上下文的导语也各自保持原文与译文。
+    expect(documents[0].find('.guided-context').text()).toContain('Intro text.')
+    expect(documents[1].find('.guided-context').text()).toContain('导语译文。')
+
+    const backButton = wrapper.findAll('button').find((button) => button.text() === '只看原文')
+    expect(backButton).toBeDefined()
+    await backButton!.trigger('click')
+
+    // 返回后仍是原文引导流。
+    const sections = wrapper.findAll('.guided-section')
+    expect(sections).toHaveLength(3)
+    expect(sections[0].text()).toContain('First Chapter')
+    expect(sections[2].text()).toContain('Third chapter body.')
+    wrapper.unmount()
+  })
+
+  it('译文块缺少行号时对照视图退回普通双文档，不做章节标注', async () => {
+    const detail = guidedEnglishFlowDetail()
+    detail.translation!.blocks = detail.translation!.blocks.map((block) => ({
+      ...block,
+      start_line: null,
+      end_line: null,
+    }))
+    const wrapper = await mountGuidedFlow(detail)
+
+    // 引导流保持原文，不自动切到对照视图。
+    expect(wrapper.findAll('.translation-document')).toHaveLength(0)
+    const sections = wrapper.findAll('.guided-section')
+    expect(sections[2].text()).toContain('Third chapter body.')
+    expect(sections[2].text()).not.toContain('第三章正文译文。')
+
+    // 对照视图仍可用，但退化为左右两个连续文档，无章节徽章。
+    const toggleButton = wrapper.findAll('button').find((button) => button.text() === '中英对照')
+    await toggleButton!.trigger('click')
+    const documents = wrapper.findAll('.translation-document')
+    expect(documents).toHaveLength(2)
+    expect(documents[0].findAll('.guided-section')).toHaveLength(0)
+    expect(documents[1].findAll('.guided-section')).toHaveLength(0)
+    expect(documents[0].text()).toContain('Third chapter body.')
+    expect(documents[1].text()).toContain('第三章正文译文。')
+    wrapper.unmount()
+  })
+})

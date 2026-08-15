@@ -12,6 +12,7 @@ import {
   translateContent,
   type FeedbackUpdate,
   type Recommendation,
+  type SectionRef,
 } from '../api'
 import { renderMarkdown } from '../markdown'
 
@@ -104,11 +105,65 @@ interface GuidedSection {
   action: 'skip' | 'skim' | 'read' | 'deep_read'
   reason: string
   summary: string
-  /** 章节原文（不含标题行）渲染后的 HTML，按来源行号在原位置展示。 */
+  /** 章节正文渲染后的 HTML，按来源行号在原位置展示。 */
   markdown: string
 }
 
+/** 中英对照视图的一个章节：左右两侧共用动作徽章，正文分别取原文与译文。 */
+interface ComparisonSection {
+  section_ref: string
+  title: string
+  translatedTitle: string
+  action: 'skip' | 'skim' | 'read' | 'deep_read'
+  /** 左侧原文渲染后的 HTML。 */
+  markdown: string
+  /** 右侧译文渲染后的 HTML；译文不可用时为空字符串。 */
+  translatedMarkdown: string
+}
+
 const guidedFlowEnabled = computed(() => content.data.value?.guided_flow_available === true)
+
+/** 译文完整且块带行号时，对照视图可以按章节行号切分译文并标注。 */
+const guidedTranslationReady = computed(() => {
+  const translation = content.data.value?.translation
+  if (!translation || translation.status !== 'completed' || !translation.blocks.length) return false
+  return translation.blocks.every(
+    (block) => block.start_line != null && block.end_line != null,
+  )
+})
+
+/** 行号范围内按来源顺序拼接译文块；无译文的共享块（代码、图片）原样保留。 */
+function translatedMarkdownFor(startLine: number, endLine: number): string {
+  const blocks = content.data.value?.translation?.blocks ?? []
+  return blocks
+    .filter(
+      (block) =>
+        block.start_line != null && block.start_line >= startLine && block.start_line < endLine,
+    )
+    .map((block) => block.translated_markdown || block.source_markdown)
+    .join('\n\n')
+}
+
+/** 从译文标题行提取纯文本，与章节清单标题的展示口径一致。 */
+function plainHeadingText(heading: string): string {
+  return heading.replace(/^#{1,6}\s+/, '').replace(/[ \t]+#+[ \t]*$/, '').trim()
+}
+
+/** 返回章节标题行的译文纯文本；译文不可用时回退到原文标题。 */
+function translatedSectionTitle(section: SectionRef): string {
+  const blocks = content.data.value?.translation?.blocks ?? []
+  const headingBlock = blocks.find(
+    (block) =>
+      block.kind === 'heading' &&
+      block.start_line != null &&
+      block.end_line != null &&
+      block.start_line <= section.start_line &&
+      section.start_line < block.end_line,
+  )
+  return headingBlock?.translated_markdown
+    ? plainHeadingText(headingBlock.translated_markdown)
+    : section.title
+}
 
 /** 按系统章节清单的原始顺序组合每个主章节的动作、原因、摘要与原文。 */
 const guidedSections = computed<GuidedSection[]>(() => {
@@ -149,6 +204,46 @@ const guidedContext = computed(() => {
   if (!data || !firstSection) return ''
   const lines = data.markdown.split('\n')
   return renderMarkdown(lines.slice(0, firstSection.start_line).join('\n'), data.source_url)
+})
+
+/** 对照视图能否按章节标注：引导流可用且译文块带行号。 */
+const comparisonAnnotated = computed(() => guidedFlowEnabled.value && guidedTranslationReady.value)
+
+/** 中英对照视图按章节组织左右两侧：左侧原文、右侧译文，共用动作徽章。 */
+const comparisonSections = computed<ComparisonSection[]>(() => {
+  const data = content.data.value
+  if (!data?.section_index || !data.personal_evaluation) return []
+  const planByRef = new Map(
+    data.personal_evaluation.reading_plan
+      .filter((item) => item.section_ref)
+      .map((item) => [item.section_ref, item]),
+  )
+  const lines = data.markdown.split('\n')
+  const translated = guidedTranslationReady.value
+  return data.section_index.sections.map((section) => ({
+    section_ref: section.section_ref,
+    title: section.title,
+    translatedTitle: translated ? translatedSectionTitle(section) : section.title,
+    action: planByRef.get(section.section_ref)?.action ?? 'read',
+    markdown: renderMarkdown(
+      lines.slice(section.start_line + 1, section.end_line).join('\n'),
+      data.source_url,
+    ),
+    translatedMarkdown: translated
+      ? renderMarkdown(
+          translatedMarkdownFor(section.start_line + 1, section.end_line),
+          data.source_url,
+        )
+      : '',
+  }))
+})
+
+/** 对照视图右侧：第一个主章节之前的译文上下文（标题与导语）。 */
+const comparisonContextTranslated = computed(() => {
+  const data = content.data.value
+  const firstSection = data?.section_index?.sections[0]
+  if (!data || !firstSection || !guidedTranslationReady.value) return ''
+  return renderMarkdown(translatedMarkdownFor(0, firstSection.start_line), data.source_url)
 })
 
 /** 顶部总览只说明 AI 如何分配章节动作，不承担目录导航职责。 */
@@ -196,7 +291,9 @@ const translationButtonText = computed(() => {
 watch(
   () => content.data.value?.translation?.status,
   (status) => {
-    if (status === 'completed') showTranslation.value = true
+    // 选择性阅读文章翻译完成后留在原文引导流，不打断阅读；
+    // 引导流不可用时才自动切到双文档对照视图。
+    if (status === 'completed' && !guidedFlowEnabled.value) showTranslation.value = true
   },
   { immediate: true },
 )
@@ -510,11 +607,45 @@ const submitFeedback = useMutation({
         >
           <section class="translation-document">
             <h3 class="translation-document-title">原文</h3>
-            <div class="markdown-body" v-html="renderedMarkdown"></div>
+            <template v-if="comparisonAnnotated">
+              <div class="guided-context markdown-body" v-html="guidedContext"></div>
+              <div
+                v-for="section in comparisonSections"
+                :key="`source-${section.section_ref}`"
+                class="guided-section"
+                :class="`guided-action-${section.action}`"
+              >
+                <div class="guided-section-head">
+                  <h4 class="comparison-section-title">{{ section.title }}</h4>
+                  <span class="guided-action-badge">
+                    {{ readingActionText[section.action] }}
+                  </span>
+                </div>
+                <div class="guided-expanded markdown-body" v-html="section.markdown"></div>
+              </div>
+            </template>
+            <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
           </section>
           <section class="translation-document translated">
             <h3 class="translation-document-title">中文译文</h3>
-            <div class="markdown-body" v-html="renderedTranslatedMarkdown"></div>
+            <template v-if="comparisonAnnotated">
+              <div class="guided-context markdown-body" v-html="comparisonContextTranslated"></div>
+              <div
+                v-for="section in comparisonSections"
+                :key="`translated-${section.section_ref}`"
+                class="guided-section"
+                :class="`guided-action-${section.action}`"
+              >
+                <div class="guided-section-head">
+                  <h4 class="comparison-section-title">{{ section.translatedTitle }}</h4>
+                  <span class="guided-action-badge">
+                    {{ readingActionText[section.action] }}
+                  </span>
+                </div>
+                <div class="guided-expanded markdown-body" v-html="section.translatedMarkdown"></div>
+              </div>
+            </template>
+            <div v-else class="markdown-body" v-html="renderedTranslatedMarkdown"></div>
           </section>
         </div>
         <div v-else-if="guidedFlowEnabled" class="guided-flow">
