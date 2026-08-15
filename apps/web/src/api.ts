@@ -67,9 +67,16 @@ export interface TriageResult {
   why_outside_profile: string | null
 }
 
+export interface ContentMapItem {
+  section_ref: string | null
+  title: string
+  summary: string
+}
+
 export interface ContentAnalysisResult {
   one_sentence_summary: string
   summary: string
+  content_map: ContentMapItem[]
   key_points: string[]
   counterarguments: string[]
   limitations: string[]
@@ -78,6 +85,7 @@ export interface ContentAnalysisResult {
 }
 
 export interface ReadingPlanItem {
+  section_ref: string | null
   section: string
   action: 'skip' | 'skim' | 'read' | 'deep_read'
   reason: string
@@ -209,6 +217,20 @@ export interface ContentTranslation {
   completed_at: string | null
 }
 
+export interface SectionRef {
+  section_ref: string
+  level: number
+  title: string
+  order: number
+  start_line: number
+  end_line: number
+}
+
+export interface SectionIndex {
+  primary_heading_level: number
+  sections: SectionRef[]
+}
+
 export interface ContentDetail extends ContentSummary {
   markdown: string
   source_language: string
@@ -217,6 +239,10 @@ export interface ContentDetail extends ContentSummary {
   content_analysis: ContentAnalysisResult | null
   personal_evaluation: PersonalEvaluationResult | null
   feedback: ArticleFeedback | null
+  /** 系统主章节清单；正文快照变化后为 null，避免引用错位。 */
+  section_index: SectionIndex | null
+  /** 是否启用顺序式引导阅读流；false 时正文整体退回完整原文。 */
+  guided_flow_available: boolean
 }
 
 export interface CaptureAccepted {

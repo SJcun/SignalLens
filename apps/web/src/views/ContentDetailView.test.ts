@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 
 import ContentDetailView from './ContentDetailView.vue'
+import type { ContentDetail } from '../api'
 
 const apiMocks = vi.hoisted(() => ({
   getContent: vi.fn(),
@@ -46,6 +47,8 @@ describe('内容详情翻译视图', () => {
       content_analysis: null,
       personal_evaluation: null,
       feedback: null,
+      section_index: null,
+      guided_flow_available: false,
       translation: {
         id: 'translation-1',
         status: 'completed',
@@ -105,6 +108,160 @@ describe('内容详情翻译视图', () => {
     expect(documents[1].text()).toContain('阅读指南。')
     expect(documents[0].text()).toContain('print("ok")')
     expect(documents[1].text()).toContain('print("ok")')
+    wrapper.unmount()
+  })
+})
+
+function guidedFlowDetail(): ContentDetail {
+  return {
+    id: 'content-guided',
+    title: '引导流测试文章',
+    author: null,
+    source_url: 'https://example.com/guided',
+    source_type: 'web',
+    capture_quality: 'good',
+    created_at: '2026-08-14T00:00:00Z',
+    analysis_id: 'analysis-guided',
+    analysis_status: 'completed',
+    one_sentence_summary: '文章摘要。',
+    recommendation: 'selective_read',
+    ai_recommendation: 'selective_read',
+    user_recommendation: null,
+    discovery_type: 'adjacent',
+    queue: {
+      stage: 'completed',
+      execution_mode: 'scheduled',
+      waiting_for_schedule: false,
+      next_eligible_at: null,
+    },
+    markdown: '# 引导流测试文章\n\n导语内容。\n\n## 第一章\n\n第一章正文。\n\n## 第二章\n\n第二章正文。\n\n## 第三章\n\n第三章正文。',
+    source_language: 'zh-CN',
+    translation: null,
+    triage: null,
+    content_analysis: {
+      one_sentence_summary: '文章摘要。',
+      summary: '整体摘要。',
+      content_map: [
+        { section_ref: 'sec-001', title: '第一章', summary: '第一章摘要。' },
+        { section_ref: 'sec-002', title: '第二章', summary: '第二章摘要。' },
+        { section_ref: 'sec-003', title: '第三章', summary: '第三章摘要。' },
+      ],
+      key_points: [],
+      counterarguments: [],
+      limitations: [],
+      unresolved_questions: [],
+      unverified_claims: [],
+    },
+    personal_evaluation: {
+      relevance: 'medium',
+      knowledge_overlap: 'low',
+      known_or_redundant: false,
+      novel_information: [],
+      exploration_value: 'medium',
+      perspective_diversity: 'medium',
+      discovery_type: 'adjacent',
+      recommendation: 'selective_read',
+      recommendation_reason: '部分章节值得亲自阅读。',
+      why_outside_profile: null,
+      reading_plan: [
+        { section_ref: 'sec-001', section: '第一章', action: 'skip', reason: '背景介绍可跳过。' },
+        { section_ref: 'sec-002', section: '第二章', action: 'skim', reason: '只需了解结论。' },
+        { section_ref: 'sec-003', section: '第三章', action: 'deep_read', reason: '关键论证需要精读。' },
+      ],
+    },
+    feedback: null,
+    section_index: {
+      primary_heading_level: 2,
+      sections: [
+        { section_ref: 'sec-001', level: 2, title: '第一章', order: 1, start_line: 4, end_line: 8 },
+        { section_ref: 'sec-002', level: 2, title: '第二章', order: 2, start_line: 8, end_line: 12 },
+        { section_ref: 'sec-003', level: 2, title: '第三章', order: 3, start_line: 12, end_line: 15 },
+      ],
+    },
+    guided_flow_available: true,
+  }
+}
+
+async function mountGuidedFlow(detail: unknown) {
+  apiMocks.getProfile.mockResolvedValue({ evaluation_mode: false })
+  apiMocks.getContent.mockResolvedValue(detail)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/contents/:contentId', component: ContentDetailView }],
+  })
+  await router.push('/contents/content-guided')
+  await router.isReady()
+  const wrapper = mount(ContentDetailView, {
+    global: { plugins: [router, VueQueryPlugin] },
+  })
+  await flushPromises()
+  return wrapper
+}
+
+describe('内容详情引导阅读流', () => {
+  it('满足条件时默认按原文顺序原位渲染折叠、摘要与原文', async () => {
+    const wrapper = await mountGuidedFlow(guidedFlowDetail())
+
+    // 顶部总览展示动作数量与模式切换，不承担目录跳转。
+    const overview = wrapper.find('.guided-overview')
+    expect(overview.text()).toContain('1 节重点精读')
+    expect(overview.text()).toContain('1 节浏览摘要')
+    expect(overview.text()).toContain('1 节跳过')
+    expect(overview.text()).toContain('完整原文')
+
+    // 上下文块（文章标题与导语）完整展示。
+    expect(wrapper.find('.guided-context').text()).toContain('导语内容')
+
+    // skip 章节原位折叠：只显示标题、跳过徽章与原因，不显示正文。
+    const sections = wrapper.findAll('.guided-section')
+    expect(sections).toHaveLength(3)
+    expect(sections[0].text()).toContain('第一章')
+    expect(sections[0].text()).toContain('跳过')
+    expect(sections[0].text()).toContain('背景介绍可跳过。')
+    expect(sections[0].text()).not.toContain('第一章正文')
+
+    // skim 章节显示摘要与原因，原文折叠。
+    expect(sections[1].text()).toContain('第二章摘要。')
+    expect(sections[1].text()).toContain('只需了解结论。')
+    expect(sections[1].text()).not.toContain('第二章正文')
+
+    // deep_read 章节完整展示原文与精读标记。
+    expect(sections[2].text()).toContain('精读')
+    expect(sections[2].text()).toContain('第三章正文')
+
+    // 章节保持来源顺序：第一章在前，第三章在后。
+    expect(sections[0].text()).toContain('第一章')
+    expect(sections[2].text()).toContain('第三章')
+    wrapper.unmount()
+  })
+
+  it('折叠章节可在原位置展开，且保持本次会话的展开状态', async () => {
+    const wrapper = await mountGuidedFlow(guidedFlowDetail())
+
+    const skipSection = wrapper.findAll('.guided-section')[0]
+    expect(skipSection.text()).not.toContain('第一章正文')
+    await skipSection.find('button.guided-expand').trigger('click')
+    expect(skipSection.text()).toContain('第一章正文')
+    expect(skipSection.find('button.guided-expand').text()).toBe('收起原文')
+
+    // 切到完整原文再切回，手动展开状态仍然保留。
+    await wrapper.find('.guided-overview .view-toggle').trigger('click')
+    expect(wrapper.find('.guided-flow .markdown-body').text()).toContain('第三章正文')
+    await wrapper.find('.guided-overview .view-toggle').trigger('click')
+    expect(wrapper.findAll('.guided-section')[0].text()).toContain('第一章正文')
+    wrapper.unmount()
+  })
+
+  it('引导流不可用时退回完整原文，不显示引导入口', async () => {
+    const detail = guidedFlowDetail()
+    detail.guided_flow_available = false
+    detail.section_index = null
+    const wrapper = await mountGuidedFlow(detail)
+
+    expect(wrapper.find('.guided-overview').exists()).toBe(false)
+    const body = wrapper.find('.markdown-body')
+    expect(body.text()).toContain('第一章正文')
+    expect(body.text()).toContain('第三章正文')
     wrapper.unmount()
   })
 })

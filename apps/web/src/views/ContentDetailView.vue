@@ -41,6 +41,10 @@ const contentId = String(route.params.contentId)
 const queryClient = useQueryClient()
 const showMarkdownSource = ref(false)
 const showTranslation = ref(false)
+// 顺序式引导阅读流：true 为引导阅读，false 为完整原文；切换不修改任何 AI 结果。
+const guidedMode = ref(true)
+// 本次页面会话中手动展开的折叠章节引用，模式切换后仍然保留。
+const expandedSections = reactive(new Set<string>())
 const profile = useQuery({ queryKey: ['profile'], queryFn: getProfile })
 const content = useQuery({
   queryKey: ['content', contentId],
@@ -93,6 +97,71 @@ const renderedMarkdown = computed(() => {
   const data = content.data.value
   return data ? renderMarkdown(data.markdown, data.source_url) : ''
 })
+
+interface GuidedSection {
+  section_ref: string
+  title: string
+  action: 'skip' | 'skim' | 'read' | 'deep_read'
+  reason: string
+  summary: string
+  /** 章节原文（不含标题行）渲染后的 HTML，按来源行号在原位置展示。 */
+  markdown: string
+}
+
+const guidedFlowEnabled = computed(() => content.data.value?.guided_flow_available === true)
+
+/** 按系统章节清单的原始顺序组合每个主章节的动作、原因、摘要与原文。 */
+const guidedSections = computed<GuidedSection[]>(() => {
+  const data = content.data.value
+  if (!data?.section_index || !data.personal_evaluation || !data.content_analysis) return []
+  const planByRef = new Map(
+    data.personal_evaluation.reading_plan
+      .filter((item) => item.section_ref)
+      .map((item) => [item.section_ref, item]),
+  )
+  const summaryByRef = new Map(
+    data.content_analysis.content_map
+      .filter((item) => item.section_ref)
+      .map((item) => [item.section_ref, item]),
+  )
+  const lines = data.markdown.split('\n')
+  return data.section_index.sections.map((section) => {
+    const plan = planByRef.get(section.section_ref)
+    const mapItem = summaryByRef.get(section.section_ref)
+    return {
+      section_ref: section.section_ref,
+      title: section.title,
+      action: plan?.action ?? 'read',
+      reason: plan?.reason ?? '',
+      summary: mapItem?.summary ?? '',
+      markdown: renderMarkdown(
+        lines.slice(section.start_line + 1, section.end_line).join('\n'),
+        data.source_url,
+      ),
+    }
+  })
+})
+
+/** 文章标题、导语和主章节之外的上下文块始终完整展示。 */
+const guidedContext = computed(() => {
+  const data = content.data.value
+  const firstSection = data?.section_index?.sections[0]
+  if (!data || !firstSection) return ''
+  const lines = data.markdown.split('\n')
+  return renderMarkdown(lines.slice(0, firstSection.start_line).join('\n'), data.source_url)
+})
+
+/** 顶部总览只说明 AI 如何分配章节动作，不承担目录导航职责。 */
+const guidedActionCounts = computed(() => {
+  const counts = { skip: 0, skim: 0, read: 0, deep_read: 0 }
+  for (const section of guidedSections.value) counts[section.action]++
+  return counts
+})
+
+function toggleSection(sectionRef: string): void {
+  if (expandedSections.has(sectionRef)) expandedSections.delete(sectionRef)
+  else expandedSections.add(sectionRef)
+}
 const canTranslate = computed(() => {
   const language = content.data.value?.source_language.toLowerCase()
   return Boolean(language?.startsWith('en'))
@@ -266,7 +335,7 @@ const submitFeedback = useMutation({
         </div>
 
         <div
-          v-if="content.data.value.personal_evaluation?.reading_plan.length"
+          v-if="!guidedFlowEnabled && content.data.value.personal_evaluation?.reading_plan.length"
           class="result-block"
         >
           <h2>阅读计划</h2>
@@ -447,6 +516,68 @@ const submitFeedback = useMutation({
             <h3 class="translation-document-title">中文译文</h3>
             <div class="markdown-body" v-html="renderedTranslatedMarkdown"></div>
           </section>
+        </div>
+        <div v-else-if="guidedFlowEnabled" class="guided-flow">
+          <div class="guided-overview">
+            <span class="guided-mode-badge">{{ guidedMode ? '选择性阅读' : '完整原文' }}</span>
+            <span class="guided-counts">
+              {{ guidedActionCounts.deep_read }} 节重点精读 · {{ guidedActionCounts.read }} 节建议阅读
+              · {{ guidedActionCounts.skim }} 节浏览摘要 · {{ guidedActionCounts.skip }} 节跳过
+            </span>
+            <button class="view-toggle" type="button" @click="guidedMode = !guidedMode">
+              {{ guidedMode ? '完整原文' : '引导阅读' }}
+            </button>
+          </div>
+          <template v-if="guidedMode">
+            <div class="guided-context markdown-body" v-html="guidedContext"></div>
+            <section
+              v-for="section in guidedSections"
+              :key="section.section_ref"
+              class="guided-section"
+              :class="`guided-action-${section.action}`"
+            >
+              <div class="guided-section-head">
+                <h3 class="guided-section-title">{{ section.title }}</h3>
+                <span class="guided-action-badge">{{ readingActionText[section.action] }}</span>
+              </div>
+              <template v-if="section.action === 'skip'">
+                <p class="guided-reason">{{ section.reason }}</p>
+                <button
+                  class="guided-expand"
+                  type="button"
+                  @click="toggleSection(section.section_ref)"
+                >
+                  {{ expandedSections.has(section.section_ref) ? '收起原文' : '展开本节原文' }}
+                </button>
+                <div
+                  v-if="expandedSections.has(section.section_ref)"
+                  class="guided-expanded markdown-body"
+                  v-html="section.markdown"
+                ></div>
+              </template>
+              <template v-else-if="section.action === 'skim'">
+                <p class="guided-summary">{{ section.summary }}</p>
+                <p class="guided-reason">{{ section.reason }}</p>
+                <button
+                  class="guided-expand"
+                  type="button"
+                  @click="toggleSection(section.section_ref)"
+                >
+                  {{ expandedSections.has(section.section_ref) ? '收起原文' : '展开本节原文' }}
+                </button>
+                <div
+                  v-if="expandedSections.has(section.section_ref)"
+                  class="guided-expanded markdown-body"
+                  v-html="section.markdown"
+                ></div>
+              </template>
+              <template v-else>
+                <p v-if="section.reason" class="guided-reason">{{ section.reason }}</p>
+                <div class="guided-expanded markdown-body" v-html="section.markdown"></div>
+              </template>
+            </section>
+          </template>
+          <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
         </div>
         <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
       </article>

@@ -204,6 +204,24 @@ p { color: var(--body-text); line-height: 1.7; }
 .section-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .view-toggle { padding: 7px 11px; color: var(--accent); background: transparent; border: 1px solid var(--accent-outline); border-radius: 8px; cursor: pointer; }
 .view-toggle:disabled { cursor: wait; opacity: .65; }
+.guided-flow { max-width: 920px; margin: 0 auto; }
+.guided-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 18px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.guided-mode-badge { padding: 4px 10px; color: var(--accent-contrast); background: var(--accent); border-radius: 999px; font-size: 13px; font-weight: 600; }
+.guided-counts { flex: 1 1 auto; color: var(--text-tertiary); font-size: 14px; }
+.guided-section { margin: 18px 0; padding: 16px 18px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; }
+.guided-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.guided-section-title { margin: 0; color: var(--heading); font-size: 21px; line-height: 1.35; }
+.guided-action-badge { flex: none; padding: 3px 9px; color: var(--accent-contrast); background: var(--accent); border-radius: 6px; font-size: 12px; font-weight: 600; }
+.guided-action-deep_read { border-color: var(--success-border); background: var(--evaluation-background); }
+.guided-action-deep_read .guided-action-badge { background: var(--warning-text); color: #241a08; }
+.guided-action-read { border-color: var(--success-border); }
+.guided-action-skip { border-color: var(--line); }
+.guided-summary { margin: 10px 0 0; color: var(--text-secondary); font-size: 15px; line-height: 1.7; }
+.guided-reason { margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.guided-expand { margin-top: 10px; padding: 5px 10px; color: var(--accent); background: transparent; border: 1px solid var(--accent-outline); border-radius: 7px; font-size: 13px; cursor: pointer; }
+.guided-expanded { margin-top: 12px; }
+.guided-expanded > :first-child { margin-top: 0; }
+.guided-context { max-width: none; }
 .markdown-body { max-width: 920px; margin: 0 auto; color: var(--text-secondary); font-size: 16px; line-height: 1.85; overflow-wrap: anywhere; }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
