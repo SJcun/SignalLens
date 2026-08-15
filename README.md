@@ -40,7 +40,7 @@ Analysis Worker（Triage → Analyze → Evaluate）
 Vue Web：Inbox / 内容详情 / 偏好 / 统计
 ```
 
-生产环境预定使用：
+生产环境预定使用（以下为示例域名，实际部署时替换为你的域名）：
 
 ```text
 Web：https://lens.example.com
@@ -149,13 +149,18 @@ npm run build --workspace @signallens/extension
 4. 选择 `E:\Code\Git\SignalLens\apps\extension`；
 5. 插件重新构建后，在扩展管理页点击“重新加载”。
 
-若要生成生产地址构建：
+若要生成生产地址构建（插件会把正文提交到你指定的真实后端域名）：
+
+1. 先将 `apps/extension/manifest.json` 的 `host_permissions` 中 `https://lens.example.com/*` 替换为你的真实域名（如 `https://lens.your-domain.com/*`）。Manifest V3 要求插件提交地址必须位于 `host_permissions`，否则浏览器会拦截请求；
+2. 设置环境变量指向真实部署地址并构建：
 
 ```powershell
-$env:SIGNALLENS_EXTENSION_API_BASE_URL="https://lens.example.com/api/v1"
-$env:SIGNALLENS_EXTENSION_WEB_BASE_URL="https://lens.example.com"
+$env:SIGNALLENS_EXTENSION_API_BASE_URL="https://lens.your-domain.com/api/v1"
+$env:SIGNALLENS_EXTENSION_WEB_BASE_URL="https://lens.your-domain.com"
 npm run build --workspace @signallens/extension
 ```
+
+3. 构建完成后在扩展管理页点击“重新加载”。`build.mjs` 会打印本次写入的 Capture API 与 Web 地址，可在插件弹窗中核对提交目标后再提交。
 
 ### 4. 测试网页导入
 
