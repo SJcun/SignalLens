@@ -18,6 +18,9 @@ htmlcov/
 .env
 .env.*
 !.env.example
+
+# 第三方网页测试夹具（本地保留，不提交 Git）
+apps/extension/tests/
 data/*
 !data/.gitkeep
 *.db
