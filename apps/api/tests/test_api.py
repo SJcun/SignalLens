@@ -15,7 +15,13 @@ from fastapi.testclient import TestClient
 
 import signallens.main as main_module
 import signallens.worker as worker_module
-from signallens.analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent
+from signallens.analysis.schemas import (
+    AnalyzeContent,
+    ContentSection,
+    EvaluateForUser,
+    ReadingPlanItem,
+    TriageContent,
+)
 from signallens.database import engine
 from signallens.main import _calibration_suggestions, app
 from signallens.translation import TranslatedBlock, TranslationBatch
@@ -89,6 +95,66 @@ class FailingProvider:
         """始终返回可诊断的模型错误。"""
 
         raise RuntimeError("模拟模型接口错误")
+
+
+class GuidedFlowProvider(FakeProvider):
+    """返回带来源引用的完整章节摘要与选择性阅读计划。"""
+
+    model = "guided-test-model"
+
+    def complete(self, *, system_prompt, user_prompt, output_model):
+        """在固定结果基础上补齐章节引用，模拟启用了引导流的模型输出。"""
+
+        if output_model is AnalyzeContent:
+            result = super().complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                output_model=output_model,
+            )
+            return result.model_copy(
+                update={
+                    "content_map": [
+                        ContentSection(section_ref="sec-001", title="第一章", summary="第一章摘要"),
+                        ContentSection(section_ref="sec-002", title="第二章", summary="第二章摘要"),
+                        ContentSection(section_ref="sec-003", title="第三章", summary="第三章摘要"),
+                    ]
+                }
+            )
+        if output_model is EvaluateForUser:
+            result = super().complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                output_model=output_model,
+            )
+            return result.model_copy(
+                update={
+                    "reading_plan": [
+                        ReadingPlanItem(
+                            section_ref="sec-001",
+                            section="第一章",
+                            action="skip",
+                            reason="背景介绍可跳过",
+                        ),
+                        ReadingPlanItem(
+                            section_ref="sec-002",
+                            section="第二章",
+                            action="read",
+                            reason="核心内容建议阅读",
+                        ),
+                        ReadingPlanItem(
+                            section_ref="sec-003",
+                            section="第三章",
+                            action="deep_read",
+                            reason="关键结论需要精读",
+                        ),
+                    ]
+                }
+            )
+        return super().complete(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            output_model=output_model,
+        )
 
 
 class FakeTranslationProvider:
@@ -416,6 +482,115 @@ def test_health_and_idempotent_capture(monkeypatch) -> None:
         ignored_stats = client.get("/api/v1/calibration/stats").json()
         assert ignored_stats["feedback_count"] == 2
         assert ignored_stats["high_value_miss_count"] == 1
+
+        # 引导阅读流：带来源引用的完整章节计划启用顺序式引导。
+        guided_payload = capture_payload()
+        guided_payload["capture_id"] = "capture-test-guided"
+        guided_payload["source"]["url"] = "https://example.com/guided-article"
+        guided_payload["source"]["title"] = "引导流测试文章"
+        guided_payload["document"]["text"] = (
+            "# 引导流测试文章\n\n导语。\n"
+            "## 第一章\n内容。\n## 第二章\n内容。\n## 第三章\n内容。\n"
+        )
+        guided = client.post("/api/v1/captures", json=guided_payload)
+        assert guided.status_code == 202
+        assert process_next_job(GuidedFlowProvider()) is True
+        guided_detail = client.get(f"/api/v1/contents/{guided.json()['content_id']}").json()
+        assert guided_detail["analysis_status"] == "completed"
+        assert guided_detail["section_index"]["primary_heading_level"] == 2
+        assert len(guided_detail["section_index"]["sections"]) == 3
+        assert guided_detail["section_index"]["sections"][0]["section_ref"] == "sec-001"
+        assert guided_detail["guided_flow_available"] is True
+        assert (
+            guided_detail["personal_evaluation"]["reading_plan"][0]["section_ref"]
+            == "sec-001"
+        )
+
+        # 用户把文章级建议修正为其他动作后，旧章节计划不再自动应用。
+        client.put(
+            f"/api/v1/analyses/{guided.json()['analysis_id']}/feedback",
+            json={
+                "preferred_recommendation": "deep_read",
+                "time_worthwhile": "yes",
+                "new_knowledge": "much",
+                "summary_quality": "accurate",
+                "key_takeaway": "全文都值得精读。",
+            },
+        )
+        corrected_guided = client.get(
+            f"/api/v1/contents/{guided.json()['content_id']}"
+        ).json()
+        assert corrected_guided["guided_flow_available"] is False
+        assert corrected_guided["section_index"] is not None
+
+        # 同一 URL 重新采集更新正文后，旧章节清单立即失效并退回完整原文。
+        updated_guided = guided_payload.copy()
+        updated_guided["capture_id"] = "capture-test-guided-updated"
+        updated_guided["document"]["text"] = (
+            "# 引导流测试文章\n\n正文已完全改变。\n## 唯一章节\n内容。"
+        )
+        assert client.post("/api/v1/captures", json=updated_guided).status_code == 202
+        stale_detail = client.get(f"/api/v1/contents/{guided.json()['content_id']}").json()
+        assert stale_detail["section_index"] is None
+        assert stale_detail["guided_flow_available"] is False
+
+        # 分析期间正文更新：旧阶段结果与新快照不能混用，任务从头重新分析。
+        client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": True, "windows": [{"start": "00:00", "end": "08:00"}]},
+        )
+        paused_payload = capture_payload()
+        paused_payload["capture_id"] = "capture-test-guided-pause"
+        paused_payload["source"]["url"] = "https://example.com/guided-pause"
+        paused_payload["source"]["title"] = "暂停测试文章"
+        paused_payload["document"]["text"] = (
+            "# 暂停测试文章\n\n## 第一章\n内容。\n## 第二章\n内容。"
+        )
+        paused = client.post("/api/v1/captures", json=paused_payload)
+        assert paused.status_code == 202
+        pause_times = iter(
+            [
+                datetime(2026, 8, 13, 17, 0, tzinfo=UTC),  # 北京时间 01:00，窗口内
+                datetime(2026, 8, 14, 0, 0, tzinfo=UTC),  # 北京时间 08:00，窗口外
+            ]
+        )
+        with monkeypatch.context() as pause_patch:
+            pause_patch.setattr(worker_module, "utc_now", lambda: next(pause_times))
+            assert process_next_job(GuidedFlowProvider()) is True
+        paused_detail = client.get(
+            f"/api/v1/contents/{paused.json()['content_id']}"
+        ).json()
+        assert paused_detail["analysis_status"] == "running"
+        assert paused_detail["triage"] is not None
+        assert paused_detail["queue"]["stage"] == "analyze"
+        assert paused_detail["section_index"] is not None
+
+        updated_paused = paused_payload.copy()
+        updated_paused["capture_id"] = "capture-test-guided-pause-updated"
+        updated_paused["document"]["text"] = (
+            "# 暂停测试文章\n\n"
+            "## 新章节一\n内容。\n## 新章节二\n内容。\n## 新章节三\n内容。"
+        )
+        assert client.post("/api/v1/captures", json=updated_paused).status_code == 202
+        with monkeypatch.context() as resume_patch:
+            resume_patch.setattr(
+                worker_module,
+                "utc_now",
+                lambda: datetime(2026, 8, 13, 18, 0, tzinfo=UTC),
+            )
+            assert process_next_job(GuidedFlowProvider()) is True
+        resumed_detail = client.get(
+            f"/api/v1/contents/{paused.json()['content_id']}"
+        ).json()
+        assert resumed_detail["analysis_status"] == "completed"
+        assert len(resumed_detail["section_index"]["sections"]) == 3
+        assert resumed_detail["guided_flow_available"] is True
+
+        # 恢复提交即分析，避免后续失败重试测试受窗口限制。
+        client.put(
+            "/api/v1/analysis-schedule",
+            json={"enabled": False, "windows": [{"start": "00:00", "end": "08:00"}]},
+        )
 
         completed_retry_attempt = client.post(
             f"/api/v1/analyses/{first.json()['analysis_id']}/retry"

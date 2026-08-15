@@ -88,6 +88,8 @@ def create_schema() -> None:
     _add_sqlite_column("article_feedback", "preferred_recommendation", "VARCHAR(32)")
     _add_sqlite_column("user_profile", "calibration_decisions_json", "JSON")
     _add_sqlite_column("analysis_jobs", "immediate_requested_at", "DATETIME")
+    _add_sqlite_column("analyses", "source_hash", "VARCHAR(64)")
+    _add_sqlite_column("analyses", "section_index_json", "JSON")
 
     with SessionLocal.begin() as session:
         # 早期版本按随机 capture_id 保存，可能为同一网页创建多条内容。

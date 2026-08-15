@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from .analysis.schemas import AnalyzeContent, EvaluateForUser, Recommendation, TriageContent
+from .analysis.sections import SectionIndex
 
 
 def attach_utc(value: datetime | None) -> datetime | None:
@@ -267,6 +268,10 @@ class ContentDetailResponse(ContentSummaryResponse):
     content_analysis: AnalyzeContent | None
     personal_evaluation: EvaluateForUser | None
     feedback: FeedbackResponse | None
+    # 系统主章节清单；正文哈希与分析快照不一致时为 None，避免引用错位。
+    section_index: SectionIndex | None
+    # 是否启用顺序式引导阅读流；False 时正文整体退回完整原文模式。
+    guided_flow_available: bool
 
 
 class CalibrationMatrixCell(BaseModel):

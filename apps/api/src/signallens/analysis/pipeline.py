@@ -14,6 +14,7 @@ from .prompts import (
     triage_input,
 )
 from .schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
+from .sections import SectionIndex
 
 OutputModel = TypeVar("OutputModel", bound=BaseModel)
 
@@ -43,8 +44,10 @@ class AnalysisInput:
     capture_mode: str
     capture_quality: str
     markdown: str
+    # 模型调用前由系统解析出的主章节清单；没有合适层级时为 None。
+    section_index: SectionIndex | None = None
 
-    def as_prompt_data(self) -> dict[str, str]:
+    def as_prompt_data(self) -> dict[str, str | dict | None]:
         """转换为三个阶段共用的稳定字典结构。"""
 
         return {
@@ -54,6 +57,9 @@ class AnalysisInput:
             "capture_mode": self.capture_mode,
             "capture_quality": self.capture_quality,
             "markdown": self.markdown,
+            "section_index": (
+                self.section_index.model_dump(mode="json") if self.section_index else None
+            ),
         }
 
 

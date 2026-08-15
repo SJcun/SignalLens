@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from .schemas import AnalyzeContent, TriageContent, UserProfile
 
-PROMPT_VERSION = "v0.3.1"
+PROMPT_VERSION = "v0.4.0"
 
 TRIAGE_SYSTEM_PROMPT = """你是 SignalLens 的快速阅读分诊器。
 只根据给定内容和简要关注主题判断是否值得继续分析，不产生最终阅读建议。
@@ -21,14 +21,23 @@ ANALYZE_SYSTEM_PROMPT = """你是 SignalLens 的内容分析器。
 只分析文章本身，不使用或猜测用户画像。摘要必须忠于原文，不得制造反方观点。
 如果原文存在反对意见、限制、不确定性或未验证主张，必须保留在对应字段中。
 章节名称尽量沿用原文，以便用户定位阅读。严格按给定 JSON Schema 输出。
-总输出控制在 4000 个汉字以内；每个列表只保留最重要的项目，不重复表达同一信息。"""
+总输出控制在 4000 个汉字以内；每个列表只保留最重要的项目，不重复表达同一信息。
+当输入 content.section_index 提供主章节清单时，content_map 必须为清单中的每个
+section_ref 各生成且仅生成一条摘要：原样复制 section_ref 与标题，每条摘要控制在
+160 个字符以内，不得遗漏、重复或新增清单之外的章节。没有 section_index 时
+按原有方式生成 content_map，不填写 section_ref。"""
 
 EVALUATE_SYSTEM_PROMPT = """你是 SignalLens 的个性化阅读评估器。
 结合内容分析和明确提供的用户画像生成阅读建议。
 区分主题熟悉度与文章价值；低相关但高探索价值的内容仍可选择性阅读或精读。
 不得把用户未声明的知识或偏好当作事实。画像为空时应保守判断知识重叠。
 严格按给定 JSON Schema 输出。
-总输出控制在 2000 个汉字以内，阅读计划最多保留真正有行动价值的章节。"""
+总输出控制在 2000 个汉字以内，阅读计划最多保留真正有行动价值的章节。
+当 content_analysis.content_map 携带 section_ref 且最终建议为 selective_read 时，
+reading_plan 必须为 content_map 中的每个 section_ref 各生成且仅生成一条动作：
+原样复制 section_ref，不遗漏、不重复、不新增来源之外的章节，并同时包含至少一个
+skip/skim 和一个 read/deep_read，避免与“摘要即可”或“全文精读”语义重叠。
+其他建议不要求穷举章节计划。"""
 
 
 def triage_input(content: dict[str, Any], profile: UserProfile) -> str:

@@ -16,6 +16,7 @@ from .analysis.pipeline import (
 from .analysis.prompts import PROMPT_VERSION
 from .analysis.provider import OpenAICompatibleProvider
 from .analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
+from .analysis.sections import SectionIndex, build_section_index, validate_guided_flow
 from .database import SessionLocal, create_schema
 from .models import (
     Analysis,
@@ -30,6 +31,7 @@ from .scheduling import is_within_windows
 from .settings import get_settings
 from .translation import (
     TRANSLATION_PROMPT_VERSION,
+    content_source_hash,
     run_translation_batch,
     translation_batches,
 )
@@ -96,7 +98,7 @@ def process_next_job(
                     content_analysis,
                     user_profile,
                 )
-                _save_evaluation(analysis_id, evaluation)
+                _save_evaluation(analysis_id, evaluation, content_analysis)
                 return True
             else:
                 raise RuntimeError(f"分析任务阶段数据不完整：{analysis_id}/{stage}")
@@ -181,6 +183,20 @@ def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
         analysis.status = "running"
         analysis.model = model
         analysis.prompt_version = PROMPT_VERSION
+        # 章节清单必须在模型调用前建立：首次领取时解析当前正文快照。
+        # 正文在分析期间被重新采集时，旧阶段结果与新正文不能混用，从头重新分析。
+        source_hash = content_source_hash(content.markdown)
+        if analysis.source_hash is None:
+            analysis.source_hash = source_hash
+            analysis.section_index_json = _section_index_json(content.markdown, content.title)
+        elif analysis.source_hash != source_hash:
+            analysis.source_hash = source_hash
+            analysis.section_index_json = _section_index_json(content.markdown, content.title)
+            analysis.triage_json = None
+            analysis.content_analysis_json = None
+            analysis.personal_evaluation_json = None
+            analysis.completed_at = None
+            job.stage = "triage"
         return ClaimedAnalysisJob(
             analysis_id=analysis.id,
             stage=job.stage,
@@ -191,6 +207,11 @@ def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
                 capture_mode=content.capture_mode,
                 capture_quality=content.capture_quality,
                 markdown=content.markdown,
+                section_index=(
+                    SectionIndex.model_validate(analysis.section_index_json)
+                    if analysis.section_index_json
+                    else None
+                ),
             ),
             triage=(
                 TriageContent.model_validate(analysis.triage_json)
@@ -203,6 +224,13 @@ def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
                 else None
             ),
         )
+
+
+def _section_index_json(markdown: str, title: str) -> dict | None:
+    """解析正文主章节清单；没有合适层级时保存 None。"""
+
+    index = build_section_index(markdown, title)
+    return index.model_dump(mode="json") if index else None
 
 
 def _can_continue_analysis(analysis_id: str) -> bool:
@@ -305,7 +333,11 @@ def _save_content_analysis(analysis_id: str, result: AnalyzeContent) -> None:
         job.stage = "evaluate"
 
 
-def _save_evaluation(analysis_id: str, result: EvaluateForUser) -> None:
+def _save_evaluation(
+    analysis_id: str,
+    result: EvaluateForUser,
+    content_analysis: AnalyzeContent,
+) -> None:
     """持久化最终建议并将分析任务标记为完成。"""
 
     with SessionLocal.begin() as session:
@@ -316,6 +348,26 @@ def _save_evaluation(analysis_id: str, result: EvaluateForUser) -> None:
         job.stage = "completed"
         job.status = "completed"
         job.last_error = None
+        # 记录选择性阅读章节计划的引用完整率，供真实文章评测使用；
+        # 校验失败只降级引导流，不影响分析任务本身。
+        try:
+            if result.recommendation == "selective_read" and analysis.section_index_json:
+                section_index = SectionIndex.model_validate(analysis.section_index_json)
+                reason = validate_guided_flow(
+                    section_index,
+                    content_analysis.content_map,
+                    result.reading_plan,
+                )
+                if reason is None:
+                    LOGGER.info(
+                        "引导流校验通过（%s）：%s 个主章节",
+                        analysis_id,
+                        len(section_index.sections),
+                    )
+                else:
+                    LOGGER.warning("引导流校验未通过（%s）：%s", analysis_id, reason)
+        except (TypeError, ValueError):
+            LOGGER.warning("引导流校验数据异常（%s），按降级处理", analysis_id)
 
 
 def _complete_analysis(analysis_id: str) -> None:

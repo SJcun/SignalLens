@@ -53,8 +53,13 @@ class ContentProfile(StrictOutputModel):
 
 
 class ContentSection(StrictOutputModel):
-    """文章中可独立定位和阅读的章节。"""
+    """文章中可独立定位和阅读的章节。
 
+    section_ref 由系统章节清单提供，模型只复制引用、不能创造；
+    历史结果没有引用时允许为空，Web 不能使用标题文本猜测位置。
+    """
+
+    section_ref: str | None = None
     title: ShortText
     summary: CompactText
 
@@ -86,8 +91,13 @@ class AnalyzeContent(StrictOutputModel):
 
 
 class ReadingPlanItem(StrictOutputModel):
-    """针对某个章节给出的具体阅读动作。"""
+    """针对某个章节给出的具体阅读动作。
 
+    section_ref 与 content_map 使用同一套来源引用；旧结果没有引用时
+    允许为空，此时只能展示为历史列表，不能参与引导阅读流。
+    """
+
+    section_ref: str | None = None
     section: ShortText
     action: Literal["skip", "skim", "read", "deep_read"]
     reason: CompactText
@@ -106,7 +116,8 @@ class EvaluateForUser(StrictOutputModel):
     recommendation: Recommendation
     recommendation_reason: SummaryText
     why_outside_profile: CompactText | None
-    reading_plan: list[ReadingPlanItem] = Field(max_length=8)
+    # selective_read 时上限与第一版主章节上限一致，保证计划能完整覆盖全部章节。
+    reading_plan: list[ReadingPlanItem] = Field(max_length=10)
 
     @model_validator(mode="after")
     def validate_exploration_recommendation(self) -> "EvaluateForUser":

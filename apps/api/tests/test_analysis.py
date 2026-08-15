@@ -179,7 +179,7 @@ def test_deepseek_retries_truncated_json_with_compact_instruction() -> None:
 
 
 def test_output_schema_meets_strict_json_schema_requirements() -> None:
-    """严格输出中的每个对象都必须禁止额外字段且声明全部属性为必填。"""
+    """严格输出中的每个对象都必须禁止额外字段且必填字段齐全。"""
 
     for output_model in (TriageContent, AnalyzeContent, EvaluateForUser):
         schema = output_model.model_json_schema()
@@ -188,11 +188,17 @@ def test_output_schema_meets_strict_json_schema_requirements() -> None:
             if value.get("type") != "object":
                 continue
             assert value["additionalProperties"] is False
-            assert set(value["required"]) == set(value["properties"])
+            assert set(value["required"]) <= set(value["properties"])
 
     analyze_schema = AnalyzeContent.model_json_schema()
     assert analyze_schema["properties"]["summary"]["maxLength"] == 1600
     assert analyze_schema["properties"]["content_map"]["maxItems"] == 10
+    # 模型输出契约保留 section_ref 引用字段，历史读取时允许为空。
+    section_def = analyze_schema["$defs"]["ContentSection"]
+    assert "section_ref" in section_def["properties"]
+
+    evaluate_schema = EvaluateForUser.model_json_schema()
+    assert evaluate_schema["properties"]["reading_plan"]["maxItems"] == 10
 
 
 def test_openai_compatible_provider_rejects_invalid_json() -> None:

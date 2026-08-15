@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .analysis.schemas import AnalyzeContent, EvaluateForUser
+from .analysis.sections import SectionIndex, validate_guided_flow
 from .auth import (
     create_plugin_key,
     create_session,
@@ -446,11 +448,13 @@ def retry_analysis(
         raise HTTPException(status_code=409, detail="分析任务关联数据缺失")
 
     # 失败时可能已经保存了前序阶段；重跑必须从同一内容快照完整开始，
-    # 防止新 Prompt 与旧阶段结果混用。
+    # 防止新 Prompt 与旧阶段结果混用。章节清单同样在重新领取时生成。
     analysis.status = "pending"
     analysis.triage_json = None
     analysis.content_analysis_json = None
     analysis.personal_evaluation_json = None
+    analysis.source_hash = None
+    analysis.section_index_json = None
     analysis.model = None
     analysis.prompt_version = "unimplemented"
     analysis.completed_at = None
@@ -717,6 +721,53 @@ def get_content(
         content_analysis=analysis.content_analysis_json,
         personal_evaluation=analysis.personal_evaluation_json,
         feedback=_feedback_response(feedback) if feedback else None,
+        section_index=(
+            SectionIndex.model_validate(analysis.section_index_json)
+            if analysis.section_index_json and analysis.source_hash == current_source_hash
+            else None
+        ),
+        guided_flow_available=_guided_flow_available(analysis, feedback, current_source_hash),
+    )
+
+
+def _guided_flow_available(
+    analysis: Analysis,
+    feedback: ArticleFeedback | None,
+    current_source_hash: str,
+) -> bool:
+    """判断详情页是否满足顺序式引导阅读流的全部启用条件。
+
+    引用、覆盖范围或正文哈希任一校验失败时都返回 False，正文整体退回
+    完整原文模式；校验失败不影响文章级建议、摘要和历史阅读计划列表。
+    """
+
+    if analysis.status != "completed":
+        return False
+    if analysis.source_hash != current_source_hash or not analysis.section_index_json:
+        return False
+    try:
+        content_analysis = AnalyzeContent.model_validate(analysis.content_analysis_json)
+        evaluation = EvaluateForUser.model_validate(analysis.personal_evaluation_json)
+        section_index = SectionIndex.model_validate(analysis.section_index_json)
+    except (TypeError, ValueError):
+        # 旧版本 JSON 或损坏数据按无引导流处理，不阻塞详情页读取。
+        return False
+    if evaluation.recommendation != "selective_read":
+        return False
+    # 用户把本次建议修正为其他文章级动作后，不再自动应用旧章节计划。
+    if (
+        feedback is not None
+        and feedback.preferred_recommendation is not None
+        and feedback.preferred_recommendation != "selective_read"
+    ):
+        return False
+    return (
+        validate_guided_flow(
+            section_index,
+            content_analysis.content_map,
+            evaluation.reading_plan,
+        )
+        is None
     )
 
 

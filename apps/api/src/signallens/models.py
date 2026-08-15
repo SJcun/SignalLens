@@ -53,6 +53,10 @@ class Analysis(Base):
     triage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_analysis_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     personal_evaluation_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 分析开始时正文快照的哈希，章节引用只对同一快照有效。
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 系统在模型调用前生成的主章节清单，属于系统元数据而非 AI 结论。
+    section_index_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_version: Mapped[str] = mapped_column(String(32), default="unimplemented")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
