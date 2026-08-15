@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .analysis.pipeline import StructuredOutputProvider
 
-TRANSLATION_PROMPT_VERSION = "translation-v0.1"
+TRANSLATION_PROMPT_VERSION = "translation-v0.2"
 TRANSLATION_BATCH_MAX_CHARS = 6000
 TRANSLATION_BATCH_MAX_BLOCKS = 12
 
@@ -24,7 +24,8 @@ TRANSLATION_SYSTEM_PROMPT = """你是 SignalLens 的专业技术文章翻译器�
 把每个 Markdown 块从原语言翻译为简体中文，并严格保持原有 Markdown 结构。
 不得总结、删减、补充或合并内容；保留标题级别、列表层级、引用、表格列数、链接地址和行内代码。
 产品名、变量名、命令、文件路径和 URL 不翻译。只返回给定 JSON Schema 要求的结果。
-每个输入 id 必须且只能返回一次，顺序与输入一致。"""
+每个输入 id 必须且只能返回一次，顺序与输入一致。
+行内代码中的注释（以 //、# 或 /* 开头）可以翻译为中文，但必须保留注释标记和反引号。"""
 
 
 class TranslatedBlock(BaseModel):
@@ -225,8 +226,38 @@ def _classify_block(source: str, fenced: bool) -> tuple[str, bool]:
 
 
 def _protected_tokens(markdown: str) -> set[str]:
-    """提取译文中必须原样保留的 URL 和行内代码。"""
+    """提取译文中必须原样保留的 URL 和行内代码。
+
+    注释类行内代码（//、#、/* 开头）是自然语言，允许翻译成中文，
+    但必须保留注释标记本身；其余行内代码（变量名、命令）和 URL 仍逐字符保护。
+    """
 
     urls = re.findall(r"https?://[^\s)>\]]+", markdown)
     inline_code = re.findall(r"(?<!`)`[^`\n]+`(?!`)", markdown)
-    return set(urls + inline_code)
+    protected = set(urls)
+    for token in inline_code:
+        marker = _comment_marker(token)
+        if marker is None:
+            protected.add(token)
+        else:
+            protected.add(marker)
+    return protected
+
+
+def _comment_marker(token: str) -> str | None:
+    """返回行内代码的注释标记（//、#、/*），非注释返回 None。
+
+    `#` 后紧跟字母的是 C 预处理指令（#include、#define），按代码保护；
+    只有 `#` 后跟空白或到行尾才视为注释。
+    """
+
+    content = token.strip("`").lstrip()
+    if content.startswith("//"):
+        return "//"
+    if content.startswith("/*"):
+        return "/*"
+    if content.startswith("#"):
+        rest = content[1:]
+        if not rest or rest[0].isspace():
+            return "#"
+    return None

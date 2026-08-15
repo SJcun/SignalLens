@@ -47,6 +47,46 @@ class WrongOrderProvider(EchoTranslationProvider):
         return TranslationBatch(translations=list(reversed(result.translations)))
 
 
+class CommentTranslatingProvider(EchoTranslationProvider):
+    """模拟模型把行内代码注释翻译成中文，但保留注释标记。"""
+
+    def complete(self, **kwargs):
+        """替换注释内容，验证注释翻译不触发保护校验。"""
+
+        result = super().complete(**kwargs)
+        return TranslationBatch(
+            translations=[
+                TranslatedBlock(
+                    id=item.id,
+                    translated_markdown=item.translated_markdown.replace(
+                        "`// Do it once!`", "`// 只做一次！`"
+                    ),
+                )
+                for item in result.translations
+            ]
+        )
+
+
+class CodeTranslatingProvider(EchoTranslationProvider):
+    """模拟模型翻译非注释的行内代码，验证真正的代码仍受保护。"""
+
+    def complete(self, **kwargs):
+        """把变量名当普通文本翻译，应被校验拒绝。"""
+
+        result = super().complete(**kwargs)
+        return TranslationBatch(
+            translations=[
+                TranslatedBlock(
+                    id=item.id,
+                    translated_markdown=item.translated_markdown.replace(
+                        "`renderLoop()`", "`渲染循环()`"
+                    ),
+                )
+                for item in result.translations
+            ]
+        )
+
+
 def test_markdown_blocks_preserve_structure_and_skip_shared_content() -> None:
     """frontmatter 不进入正文，代码和图片只作为共享块展示。"""
 
@@ -87,6 +127,26 @@ def test_translation_rejects_reordered_block_ids() -> None:
     blocks = split_markdown_blocks("# English title\n\nRead the guide")
     with pytest.raises(ValueError, match="翻译块 ID 不匹配"):
         run_translation_batch(WrongOrderProvider(), blocks)
+
+
+def test_translation_allows_comment_translation_but_keeps_marker() -> None:
+    """行内代码注释是自然语言，允许翻译成中文，但注释标记必须保留。"""
+
+    blocks = split_markdown_blocks(
+        "Respect the lifecycle with `// Do it once!` and call `renderLoop()`."
+    )
+    result = run_translation_batch(CommentTranslatingProvider(), blocks)
+    translated = result.translations[0].translated_markdown
+    assert "`// 只做一次！`" in translated
+    assert "`renderLoop()`" in translated
+
+
+def test_translation_rejects_translated_non_comment_code() -> None:
+    """非注释行内代码（变量名、命令）被翻译时仍拒绝整批结果。"""
+
+    blocks = split_markdown_blocks("Call `renderLoop()` once per page load.")
+    with pytest.raises(ValueError, match="修改了受保护内容"):
+        run_translation_batch(CodeTranslatingProvider(), blocks)
 
 
 def test_body_language_overrides_misleading_page_metadata() -> None:
