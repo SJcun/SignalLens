@@ -70,6 +70,7 @@ from .schemas import (
 from .settings import get_settings
 from .translation import (
     TRANSLATION_PROMPT_VERSION,
+    align_block_line_ranges,
     content_source_hash,
     detect_source_language,
     split_markdown_blocks,
@@ -713,7 +714,7 @@ def get_content(
         markdown=content.markdown,
         source_language=detect_source_language(content.markdown),
         translation=(
-            _translation_response(translation)
+            _translation_response(translation, content.markdown)
             if translation and translation.source_hash == current_source_hash
             else None
         ),
@@ -836,7 +837,7 @@ def create_or_retry_translation(
         translation.completed_at = None
 
     session.commit()
-    return _translation_response(translation)
+    return _translation_response(translation, content.markdown)
 
 
 def _content_summary(
@@ -874,9 +875,14 @@ def _content_summary(
     )
 
 
-def _translation_response(translation: ContentTranslation) -> TranslationResponse:
-    """把内部断点字段转换为详情页需要的安全翻译响应。"""
+def _translation_response(translation: ContentTranslation, markdown: str) -> TranslationResponse:
+    """把内部断点字段转换为详情页需要的安全翻译响应。
 
+    markdown 用于为旧译文块按位置补齐行号；块与当前正文不一致时，
+    行号保持为空，引导流退回逐节原文展示。
+    """
+
+    blocks = align_block_line_ranges(markdown, translation.blocks_json)
     return TranslationResponse(
         id=translation.id,
         status=translation.status,
@@ -891,8 +897,10 @@ def _translation_response(translation: ContentTranslation) -> TranslationRespons
                 source_markdown=block["source_markdown"],
                 translated_markdown=block.get("translated_markdown"),
                 shared=not block["translatable"],
+                start_line=block.get("start_line"),
+                end_line=block.get("end_line"),
             )
-            for block in translation.blocks_json
+            for block in blocks
         ],
         model=translation.model,
         prompt_version=translation.prompt_version or TRANSLATION_PROMPT_VERSION,

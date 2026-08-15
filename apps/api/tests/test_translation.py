@@ -7,6 +7,7 @@ import pytest
 from signallens.translation import (
     TranslatedBlock,
     TranslationBatch,
+    align_block_line_ranges,
     detect_source_language,
     run_translation_batch,
     split_markdown_blocks,
@@ -162,3 +163,49 @@ def test_body_language_overrides_misleading_page_metadata() -> None:
     chinese_body = "中文技术文章讨论模型评测、Agent 架构和可靠性。" * 20
     misleading_chinese = f'---\nlanguage: "en"\n---\n\n{chinese_body}'
     assert detect_source_language(misleading_chinese) == "zh-CN"
+
+
+def test_markdown_blocks_record_line_ranges_on_full_document() -> None:
+    """译文块行号与章节解析共用全文口径，frontmatter 不占用正文行号。"""
+
+    markdown = """---
+language: "en"
+---
+
+# English title
+
+Read the [guide](https://example.com/guide).
+
+```python
+print("English code")
+```
+"""
+    blocks = split_markdown_blocks(markdown)
+
+    # frontmatter 占 3 行；标题在第 4 行（零起点），正文段在第 6 行，代码块到第 11 行。
+    assert [(block["start_line"], block["end_line"]) for block in blocks] == [
+        (4, 5),
+        (6, 7),
+        (8, 11),
+    ]
+    # 与章节解析的标题定位一致：标题块从 frontmatter 之后的第一行开始。
+    assert blocks[0]["start_line"] == 4
+    assert blocks[0]["kind"] == "heading"
+
+
+def test_align_block_line_ranges_fills_legacy_blocks() -> None:
+    """旧译文块缺少行号时按位置补齐；与当前正文不一致时保持原样。"""
+
+    markdown = "# English title\n\nRead the guide."
+    legacy = split_markdown_blocks(markdown)
+    for block in legacy:
+        block.pop("start_line")
+        block.pop("end_line")
+
+    aligned = align_block_line_ranges(markdown, legacy)
+    assert [block["start_line"] for block in aligned] == [0, 2]
+    assert [block["end_line"] for block in aligned] == [1, 3]
+
+    # 块内容与当前正文不一致（旧算法产物）时不做猜测，行号保持缺失。
+    stale = [{"id": "b1", "source_markdown": "# Old title"}]
+    assert align_block_line_ranges(markdown, stale) is stale

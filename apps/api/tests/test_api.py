@@ -660,6 +660,11 @@ print("keep English code")
         assert translated_detail["translation"]["completed_blocks"] == 2
         translated_blocks = translated_detail["translation"]["blocks"]
         assert translated_blocks[0]["translated_markdown"] == "# 英文文章"
+        # 块携带与正文一致的全文行号，供引导阅读流按行号取用对应译文。
+        assert translated_blocks[0]["start_line"] == 4
+        assert translated_blocks[0]["end_line"] == 5
+        assert translated_blocks[2]["start_line"] == 8
+        assert translated_blocks[2]["end_line"] == 11
         assert translated_blocks[2]["kind"] == "code"
         assert translated_blocks[2]["shared"] is True
         assert translated_blocks[2]["translated_markdown"] is None

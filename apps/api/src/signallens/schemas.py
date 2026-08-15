@@ -236,6 +236,10 @@ class TranslationBlockResponse(BaseModel):
     source_markdown: str
     translated_markdown: str | None
     shared: bool
+    # 块在原文中的行号范围（零起点、左闭右开），与 section_index 口径一致；
+    # 旧数据或正文与译文不一致时为 None，引导流退回逐节原文。
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 class TranslationResponse(BaseModel):

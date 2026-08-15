@@ -101,12 +101,17 @@ def strip_frontmatter(markdown: str) -> str:
 
 
 def split_markdown_blocks(markdown: str) -> list[dict]:
-    """按空行和代码围栏拆分 Markdown，生成可持久化的稳定内容块。"""
+    """按空行和代码围栏拆分 Markdown，生成可持久化的稳定内容块。
 
-    lines = strip_frontmatter(markdown).strip().splitlines()
+    每个块携带 start_line / end_line（全文零起点、左闭右开行号），与
+    章节解析共用同一行号口径，引导阅读流据此按行号取用对应译文。
+    """
+
+    # CRLF 先归一化，保证行号口径与章节解析一致；孤立 \r 不做行分隔。
+    lines = markdown.replace("\r\n", "\n").split("\n")
     blocks: list[dict] = []
     index = 0
-    line_index = 0
+    line_index = _frontmatter_line_count(lines)
     while line_index < len(lines):
         if not lines[line_index].strip():
             line_index += 1
@@ -135,10 +140,51 @@ def split_markdown_blocks(markdown: str) -> list[dict]:
                 "source_markdown": source,
                 "translated_markdown": None,
                 "translatable": translatable,
+                "start_line": start,
+                "end_line": line_index,
             }
         )
         index += 1
     return blocks
+
+
+def _frontmatter_line_count(lines: list[str]) -> int:
+    """返回 YAML frontmatter 占用的行数；没有 frontmatter 时返回 0。
+
+    与 strip_frontmatter 规则一致：首行必须是 ---，在下一个 --- 或 ...
+    行结束；返回的行数指向正文第一行，供分块行号与章节解析对齐。
+    """
+
+    if not lines or lines[0].strip("\r") != "---":
+        return 0
+    for line_index, line in enumerate(lines[1:], start=1):
+        if line.strip(" \t\r") in {"---", "..."}:
+            return line_index + 1
+    return 0
+
+
+def align_block_line_ranges(markdown: str, blocks: list[dict]) -> list[dict]:
+    """为持久化译文块补齐与当前正文快照对齐的行号范围。
+
+    旧版本创建的块没有行号；块与当前正文一致时按位置补齐，数量或内容
+    不一致时原样返回，避免把错位行号交给引导阅读流。
+    """
+
+    current = split_markdown_blocks(markdown)
+    if len(current) != len(blocks):
+        return blocks
+    aligned: list[dict] = []
+    for stored, fresh in zip(blocks, current, strict=True):
+        if (
+            stored.get("id") != fresh["id"]
+            or stored.get("source_markdown") != fresh["source_markdown"]
+        ):
+            return blocks
+        block = dict(stored)
+        block["start_line"] = fresh["start_line"]
+        block["end_line"] = fresh["end_line"]
+        aligned.append(block)
+    return aligned
 
 
 def translation_batches(blocks: list[dict]) -> Iterable[list[dict]]:

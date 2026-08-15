@@ -200,6 +200,9 @@ export interface TranslationBlock {
   source_markdown: string
   translated_markdown: string | null
   shared: boolean
+  /** 块在原文中的行号范围（零起点、左闭右开），与 section_index 口径一致。 */
+  start_line: number | null
+  end_line: number | null
 }
 
 export interface ContentTranslation {
