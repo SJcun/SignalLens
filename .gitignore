@@ -4,6 +4,7 @@ dist/
 coverage/
 *.tsbuildinfo
 artifacts/
+.npm-cache/
 
 # Python 虚拟环境、缓存与测试产物
 .venv/
