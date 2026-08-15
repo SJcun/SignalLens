@@ -111,13 +111,7 @@ uv run --project apps/api signallens-api
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/api/v1/health>
 
-首次启动会创建唯一账户 `admin`，随机初始密码位于：
-
-```text
-data/initial-admin-password.txt
-```
-
-该文件已被 Git 忽略。使用初始密码登录 Web 后会进入“账户安全”页；修改密码成功会撤销全部 Web 会话，并自动删除该初始密码文件。插件使用独立 Key，不保存 admin 密码。
+首次启动会自动创建唯一账户 `admin`，随机初始密码的构建机制见下文「单用户与初始管理员」一节。插件使用独立 Key，不保存 admin 密码。
 
 修改后端代码后需要停止并重新启动，因为当前启动入口没有开启自动重载。
 
@@ -175,6 +169,16 @@ npm run build --workspace @signallens/extension
 Inbox 最迟约 5 秒自动刷新，也可以手动刷新页面。点击内容卡片可以查看原网页入口和提取后的完整 Markdown。
 
 未启动 Worker 或未配置模型时，预期状态是“等待分析”。配置模型并启动 Worker 后，页面会从“等待分析”切换为“分析中”，完成后展示阅读建议和结构化结果。
+
+## 单用户与初始管理员
+
+系统按单用户设计：唯一账户为 `admin`，不提供注册接口。初始管理员的构建机制如下：
+
+- **创建时机**：每次启动都会检查 `admin_users` 表，仅当不存在 `admin` 账户时才自动创建；重复启动不会重新生成或重置密码；
+- **初始密码**：由 `secrets.token_urlsafe(18)` 随机生成，作为一次性凭据写入 `SIGNALLENS_BOOTSTRAP_PASSWORD_FILE` 指向的文件（默认 `data/initial-admin-password.txt`，Docker 部署为容器挂载卷的 `/data/initial-admin-password.txt`）。文件内容为 `username=admin` 与 `password=...` 两行；写入采用临时文件原子替换，并在支持的平台限制为当前用户可读写；凭据先落盘再创建账户，避免文件写入失败后无法登录；
+- **安全边界**：初始密码文件已被 Git 忽略，不进入版本库；
+- **首次登录**：账户带有“首次登录后必须改密”标记，用初始密码登录 Web 后会进入“账户安全”页；
+- **改密之后**：修改密码成功会撤销全部 Web 会话，并自动删除初始密码文件，此后该文件不再存在。
 
 ## 内容身份与时间规则
 
