@@ -247,3 +247,7 @@ npm run build --workspace @signallens/extension
 5. 用户满意后关闭评测模式，保留反馈入口和历史数据。
 
 V0.1 暂不实现：PDF、音视频、RSS、RAG、向量数据库、知识图谱、复杂推荐算法。
+
+## License
+
+SignalLens 以 [Apache License 2.0](LICENSE) 开源。
