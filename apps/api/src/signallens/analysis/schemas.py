@@ -65,11 +65,26 @@ class ContentSection(StrictOutputModel):
 
 
 class ContentClaim(StrictOutputModel):
-    """文章提出的主要主张及原文证据状态。"""
+    """文章提出的可独立比较的主张及原文证据状态。
 
+    claim_id 由系统在持久化阶段分配（如 claim-001），模型不输出；
+    claim_role 区分核心观点、重要支撑和边缘细节，一个 Claim 只有一个角色；
+    change_signal 描述原文是否出现时间、版本、替代或废弃信号，
+    没有原文证据时必须为 none，用于触发历史 Memory 召回；
+    section_ref 必须来自系统章节清单，模型只能复制引用、不能创造。
+    """
+
+    # 系统在持久化 Claims 时分配的稳定 ID；模型输出中始终为空。
+    claim_id: str | None = None
     claim: CompactText
+    claim_type: Literal["fact", "interpretation", "opinion", "prediction", "recommendation", "definition"]
+    claim_role: Literal["core", "supporting", "detail"]
+    change_signal: Literal["none", "temporal", "version", "replacement", "deprecation"] = "none"
+    section_ref: str | None = None
     evidence: list[CompactText] = Field(max_length=4)
     verification: Literal["supported_in_content", "unverified", "opinion"]
+    topics: list[ShortText] = Field(default_factory=list, max_length=5)
+    entities: list[ShortText] = Field(default_factory=list, max_length=5)
 
 
 class AnalyzeContent(StrictOutputModel):
@@ -142,3 +157,18 @@ class UserProfile(BaseModel):
     preferred_depth: str = "balanced"
     time_budget_minutes: int = 20
     exploration_level: str = "medium"
+
+
+class CurrentUserState(BaseModel):
+    """Evaluate 输入使用的当前阅读上下文；状态为空时使用保守默认值。
+
+    只包含用户显式编辑的短时上下文，不承担长期认知存储；
+    valid_until 过期或未设置时按空状态处理。
+    """
+
+    active_goals: list[str] = Field(default_factory=list)
+    active_questions: list[str] = Field(default_factory=list)
+    focus_context: str | None = None
+    available_minutes: int | None = None
+    preferred_depth: str | None = None
+    exploration_level: str | None = None

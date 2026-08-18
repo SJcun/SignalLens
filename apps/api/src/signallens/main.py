@@ -11,7 +11,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .analysis.claims import load_claim_rows, with_normalized_claims
+from .analysis.provider import build_provider_from_settings
 from .analysis.schemas import AnalyzeContent, EvaluateForUser
+from .analysis.schemas import ContentClaim as ContentClaimContract
 from .analysis.sections import SectionIndex, validate_guided_flow
 from .auth import (
     create_plugin_key,
@@ -25,6 +28,15 @@ from .auth import (
     verify_password,
 )
 from .database import SessionLocal, create_schema, get_session
+from .memory import (
+    MemoryProposalError,
+    MemoryRevisionConflict,
+    append_memory_revision,
+    apply_claim_feedback,
+    apply_memory_match,
+    apply_proposal_decision,
+    run_memory_match,
+)
 from .models import (
     AdminUser,
     Analysis,
@@ -32,8 +44,17 @@ from .models import (
     AnalysisSchedule,
     ArticleFeedback,
     AuthSession,
+    ClaimCorrection,
+    ClaimFeedbackEvent,
+    CognitiveCompareRun,
+    CognitiveMemory,
+    CognitiveMemoryRevision,
     Content,
+    ContentClaim,
     ContentTranslation,
+    CurrentUserStateRecord,
+    MemoryChangeProposal,
+    MemoryConfirmationEvent,
     PluginApiKey,
     UserProfileRecord,
     utc_now,
@@ -51,19 +72,36 @@ from .schemas import (
     CaptureAccepted,
     CaptureRequest,
     ChangePasswordRequest,
+    ClaimCorrectionResponse,
+    ClaimCorrectionUpsert,
+    ClaimFeedbackResponse,
+    ClaimFeedbackUpsert,
+    CognitiveDeltaResponse,
+    CompareRunResponse,
     ContentDetailResponse,
     ContentSummaryResponse,
     CurrentUserResponse,
+    CurrentUserStateResponse,
+    CurrentUserStateUpdate,
     FeedbackResponse,
     FeedbackUpsert,
     GeneratedPluginKeyResponse,
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    MemoryConfirmationEventResponse,
+    MemoryCreateRequest,
+    MemoryDetailResponse,
+    MemoryProposalResponse,
+    MemoryRevisionAppendRequest,
+    MemoryRevisionResponse,
+    MemorySummaryResponse,
+    MemoryWriteResponse,
     MessageResponse,
     PluginKeyStatusResponse,
     ProfileResponse,
     ProfileUpdate,
+    ProposalDecisionRequest,
     TranslationBlockResponse,
     TranslationResponse,
 )
@@ -273,6 +311,180 @@ def revoke_plugin_key(
     return MessageResponse(message="插件 Key 已撤销")
 
 
+@app.get("/api/v1/memory", response_model=list[MemorySummaryResponse])
+def list_memories(session: Annotated[Session, Depends(get_session)]) -> list[MemorySummaryResponse]:
+    """返回全部认知记忆的逻辑身份与当前版本。"""
+
+    memories = session.scalars(select(CognitiveMemory).order_by(CognitiveMemory.created_at)).all()
+    return [_memory_summary(session, memory) for memory in memories]
+
+
+@app.get("/api/v1/memory/proposals", response_model=list[MemoryProposalResponse])
+def list_memory_proposals(
+    session: Annotated[Session, Depends(get_session)],
+) -> list[MemoryProposalResponse]:
+    """返回等待用户处理的 Memory 修改建议。"""
+
+    proposals = session.scalars(
+        select(MemoryChangeProposal)
+        .where(MemoryChangeProposal.status == "pending")
+        .order_by(MemoryChangeProposal.created_at)
+    ).all()
+    return [_proposal_response(proposal) for proposal in proposals]
+
+
+@app.get("/api/v1/memory/{memory_id}", response_model=MemoryDetailResponse)
+def get_memory(
+    memory_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> MemoryDetailResponse:
+    """返回单个 Memory 的完整不可变历史与确认记录。"""
+
+    memory = session.get(CognitiveMemory, memory_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="认知记忆不存在")
+    revisions = session.scalars(
+        select(CognitiveMemoryRevision)
+        .where(CognitiveMemoryRevision.cognitive_memory_id == memory.id)
+        .order_by(CognitiveMemoryRevision.version.desc())
+    ).all()
+    events = session.scalars(
+        select(MemoryConfirmationEvent)
+        .where(MemoryConfirmationEvent.cognitive_memory_id == memory.id)
+        .order_by(MemoryConfirmationEvent.created_at.desc())
+    ).all()
+    return MemoryDetailResponse(
+        **_memory_summary(session, memory).model_dump(),
+        revisions=[_memory_revision_response(item) for item in revisions],
+        confirmation_events=[
+            MemoryConfirmationEventResponse(
+                id=item.id,
+                confirmation_type=item.confirmation_type,
+                source_type=item.source_type,
+                content_claim_id=item.content_claim_id,
+                source_feedback_id=item.source_feedback_id,
+                source_proposal_id=item.source_proposal_id,
+                created_at=item.created_at,
+            )
+            for item in events
+        ],
+    )
+
+
+@app.post("/api/v1/memory", response_model=MemoryWriteResponse)
+def create_memory_entry(
+    payload: MemoryCreateRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> MemoryWriteResponse:
+    """手工录入认知；CREATE 前先执行 Memory Match，不能直接新建。"""
+
+    match = run_memory_match(
+        session,
+        build_provider_from_settings(),
+        statement=payload.statement,
+        topics=payload.topics,
+        entities=payload.entities,
+    )
+    outcome, memory_id, proposal_id = apply_memory_match(
+        session,
+        match,
+        statement=payload.statement,
+        target_awareness=payload.awareness_state,
+        target_stance=payload.stance,
+        target_lifecycle=payload.lifecycle,
+        source_type="manual",
+        confirmation_type="awareness_confirmed",
+        topics=payload.topics,
+        entities=payload.entities,
+    )
+    session.commit()
+    return _memory_write_response(session, outcome, memory_id, proposal_id, match)
+
+
+@app.post(
+    "/api/v1/memory/{memory_id}/revisions",
+    response_model=MemoryWriteResponse,
+)
+def append_memory_revision_entry(
+    memory_id: str,
+    payload: MemoryRevisionAppendRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> MemoryWriteResponse:
+    """为已有 Memory 追加 Revision；期望版本不匹配时返回明确冲突。"""
+
+    memory = session.get(CognitiveMemory, memory_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="认知记忆不存在")
+    if memory.current_revision_id is None:
+        raise HTTPException(status_code=409, detail="认知记忆没有当前版本")
+
+    current = session.get(CognitiveMemoryRevision, memory.current_revision_id)
+    if current is None:
+        raise HTTPException(status_code=409, detail="认知记忆当前版本缺失")
+    if current.id != payload.expected_current_revision_id:
+        raise HTTPException(
+            status_code=409,
+            detail="当前版本已变化，请基于最新版本重新确认",
+        )
+    try:
+        append_memory_revision(
+            session,
+            memory.id,
+            statement=payload.statement or current.statement,
+            awareness_state=payload.awareness_state or current.awareness_state,
+            stance=payload.stance or current.stance,
+            lifecycle=payload.lifecycle or current.lifecycle,
+            confidence=payload.confidence or current.confidence,
+            source_type="manual",
+            expected_current_revision_id=current.id,
+            topics=list(current.topics_json),
+            entities=list(current.entities_json),
+        )
+    except MemoryRevisionConflict as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    return MemoryWriteResponse(
+        outcome="revised",
+        memory=_memory_summary(session, memory),
+        proposal_id=None,
+        match_source="none",
+        reason="已按用户修改追加新版本",
+    )
+
+
+@app.post(
+    "/api/v1/memory/proposals/{proposal_id}/decision",
+    response_model=MemoryProposalResponse,
+)
+def decide_memory_proposal(
+    proposal_id: str,
+    payload: ProposalDecisionRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> MemoryProposalResponse:
+    """接受或拒绝 Memory 修改建议；只有 accepted 才能改变正式状态。"""
+
+    existing = session.get(MemoryChangeProposal, proposal_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="修改建议不存在")
+    try:
+        proposal, _outcome, _memory_id = apply_proposal_decision(
+            session,
+            build_provider_from_settings(),
+            proposal_id=proposal_id,
+            decision=payload.decision,
+            merge_memory_id=payload.merge_memory_id,
+        )
+    except MemoryRevisionConflict as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MemoryProposalError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    return _proposal_response(proposal)
+
+
 @app.get("/api/v1/profile", response_model=ProfileResponse)
 def get_profile(session: Annotated[Session, Depends(get_session)]) -> ProfileResponse:
     """返回当前问卷画像；未填写时提供可直接编辑的默认值。"""
@@ -299,6 +511,35 @@ def update_profile(
     profile.updated_at = utc_now()
     session.commit()
     return _profile_response(profile)
+
+
+@app.get("/api/v1/user-state", response_model=CurrentUserStateResponse)
+def get_user_state(
+    session: Annotated[Session, Depends(get_session)],
+) -> CurrentUserStateResponse:
+    """返回当前阅读状态；未编辑时提供可直接填写的默认值。"""
+
+    return _user_state_response(_get_or_create_user_state(session))
+
+
+@app.put("/api/v1/user-state", response_model=CurrentUserStateResponse)
+def update_user_state(
+    payload: CurrentUserStateUpdate,
+    session: Annotated[Session, Depends(get_session)],
+) -> CurrentUserStateResponse:
+    """保存用户显式编辑的当前阅读上下文，不根据浏览行为自动推断。"""
+
+    record = _get_or_create_user_state(session)
+    record.active_goals_json = payload.active_goals
+    record.active_questions_json = payload.active_questions
+    record.focus_context = payload.focus_context
+    record.available_minutes = payload.available_minutes
+    record.preferred_depth = payload.preferred_depth
+    record.exploration_level = payload.exploration_level
+    record.valid_until = payload.valid_until
+    record.updated_at = utc_now()
+    session.commit()
+    return _user_state_response(record)
 
 
 @app.get("/api/v1/analysis-schedule", response_model=AnalysisScheduleResponse)
@@ -465,6 +706,178 @@ def retry_analysis(
     job.immediate_requested_at = None
     session.commit()
     return _accepted(session, content, analysis)
+
+
+@app.get("/api/v1/analyses/{analysis_id}/compare", response_model=CompareRunResponse)
+def get_compare_run(
+    analysis_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> CompareRunResponse:
+    """返回某次分析的 Compare 完整输入、召回上下文与结果。"""
+
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="分析任务不存在")
+    run = (
+        session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+        if analysis.cognitive_compare_run_id
+        else None
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="该分析没有可用的 Compare 运行记录")
+    return _compare_run_response(session, run)
+
+
+@app.post(
+    "/api/v1/analyses/{analysis_id}/retry-compare",
+    response_model=MessageResponse,
+)
+def retry_compare(
+    analysis_id: str,
+    session: Annotated[Session, Depends(get_session)],
+) -> MessageResponse:
+    """单独重试失败的 Compare；不重跑 Evaluate，不改写历史 Delta。"""
+
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="分析任务不存在")
+    if analysis.status == "completed":
+        raise HTTPException(status_code=409, detail="已完成的分析不能重试 Compare")
+    run = (
+        session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+        if analysis.cognitive_compare_run_id
+        else None
+    )
+    if run is None:
+        raise HTTPException(status_code=409, detail="没有可重试的 Compare 运行")
+    job = session.scalar(select(AnalysisJob).where(AnalysisJob.analysis_id == analysis.id))
+    if job is None:
+        raise HTTPException(status_code=409, detail="分析队列任务缺失")
+
+    run.status = "pending"
+    run.compare_output_json = None
+    run.derived_summary_json = None
+    run.last_error = None
+    run.completed_at = None
+    job.stage = "compare"
+    job.status = "pending"
+    job.last_error = None
+    analysis.status = "pending"
+    session.commit()
+    return MessageResponse(message="Compare 已重新排队")
+
+
+@app.post(
+    "/api/v1/analyses/{analysis_id}/claims/{claim_id}/feedback",
+    response_model=ClaimFeedbackResponse,
+)
+def submit_claim_feedback(
+    analysis_id: str,
+    claim_id: str,
+    payload: ClaimFeedbackUpsert,
+    session: Annotated[Session, Depends(get_session)],
+) -> ClaimFeedbackResponse:
+    """对具体 Claim 提交知晓 / 立场确认；目标状态先进入 Memory Match。"""
+
+    claim = _load_analysis_claim(session, analysis_id, claim_id)
+    event = ClaimFeedbackEvent(
+        analysis_id=analysis_id,
+        content_claim_id=claim.id,
+        awareness=payload.awareness,
+        stance=payload.stance,
+        root_cause=payload.root_cause,
+    )
+    session.add(event)
+    session.flush()
+    outcome, memory_id, proposal_id, match = apply_claim_feedback(
+        session,
+        build_provider_from_settings(),
+        content_claim_id=claim.id,
+        awareness=payload.awareness,
+        stance=payload.stance,
+        source_feedback_id=event.id,
+        confirmation_type=payload.confirmation_type,
+    )
+    session.commit()
+    return ClaimFeedbackResponse(
+        outcome=outcome,
+        memory_id=memory_id,
+        proposal_id=proposal_id,
+        match_source=match.match_source,
+        reason=match.reason,
+    )
+
+
+@app.post(
+    "/api/v1/analyses/{analysis_id}/claims/{claim_id}/correction",
+    response_model=ClaimCorrectionResponse,
+)
+def submit_claim_correction(
+    analysis_id: str,
+    claim_id: str,
+    payload: ClaimCorrectionUpsert,
+    session: Annotated[Session, Depends(get_session)],
+) -> ClaimCorrectionResponse:
+    """提交 primary_relation / claim_role 高级纠错，原始值与纠正值都保留。"""
+
+    claim = _load_analysis_claim(session, analysis_id, claim_id)
+    analysis = session.get(Analysis, analysis_id)
+    run = (
+        session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+        if analysis is not None and analysis.cognitive_compare_run_id
+        else None
+    )
+    original_value = _correction_original_value(claim, run, payload.correction_type)
+    if original_value == payload.corrected_value:
+        raise HTTPException(status_code=409, detail="纠正值与原始值相同")
+
+    evidence_status = "not_applicable"
+    matched_ids = list(payload.matched_memory_revision_ids)
+    if payload.correction_type == "primary_relation":
+        if payload.corrected_value not in {
+            "duplicate",
+            "extends",
+            "complements",
+            "contradicts",
+            "updates",
+            "new",
+        }:
+            raise HTTPException(status_code=422, detail="无效的认知关系")
+        if payload.corrected_value == "new":
+            matched_ids = []
+            evidence_status = "not_applicable"
+        elif run is not None:
+            allowed = set(run.current_memory_candidate_revision_ids_json) | set(
+                run.historical_memory_candidate_revision_ids_json
+            )
+            if matched_ids and not set(matched_ids) <= allowed:
+                raise HTTPException(status_code=422, detail="证据必须来自本次候选集合")
+            if set(matched_ids) <= allowed and matched_ids:
+                evidence_status = "complete"
+            else:
+                evidence_status = "incomplete"
+        else:
+            matched_ids = []
+            evidence_status = "incomplete"
+    else:
+        if payload.corrected_value not in {"core", "supporting", "detail"}:
+            raise HTTPException(status_code=422, detail="无效的 Claim 角色")
+        matched_ids = []
+
+    correction = ClaimCorrection(
+        analysis_id=analysis_id,
+        content_claim_id=claim.id,
+        cognitive_compare_run_id=run.id if run else None,
+        correction_type=payload.correction_type,
+        original_value=original_value,
+        corrected_value=payload.corrected_value,
+        matched_memory_revision_ids_json=matched_ids,
+        evidence_status=evidence_status,
+        reason=payload.reason,
+    )
+    session.add(correction)
+    session.commit()
+    return _claim_correction_response(correction)
 
 
 @app.put(
@@ -709,6 +1122,8 @@ def get_content(
     )
     current_source_hash = content_source_hash(content.markdown)
     summary = _content_summary(session, content, analysis, job, feedback)
+    claim_rows = load_claim_rows(session, analysis.id)
+    delta = _cognitive_delta(session, analysis)
     return ContentDetailResponse(
         **summary.model_dump(),
         markdown=content.markdown,
@@ -719,7 +1134,7 @@ def get_content(
             else None
         ),
         triage=analysis.triage_json,
-        content_analysis=analysis.content_analysis_json,
+        content_analysis=with_normalized_claims(analysis.content_analysis_json),
         personal_evaluation=analysis.personal_evaluation_json,
         feedback=_feedback_response(feedback) if feedback else None,
         section_index=(
@@ -728,6 +1143,9 @@ def get_content(
             else None
         ),
         guided_flow_available=_guided_flow_available(analysis, feedback, current_source_hash),
+        claims=_claim_response_rows(claim_rows) if claim_rows else None,
+        cognitive_delta=delta,
+        retrieval_context_status=analysis.retrieval_context_status,
     )
 
 
@@ -747,7 +1165,9 @@ def _guided_flow_available(
     if analysis.source_hash != current_source_hash or not analysis.section_index_json:
         return False
     try:
-        content_analysis = AnalyzeContent.model_validate(analysis.content_analysis_json)
+        content_analysis = AnalyzeContent.model_validate(
+            with_normalized_claims(analysis.content_analysis_json)
+        )
         evaluation = EvaluateForUser.model_validate(analysis.personal_evaluation_json)
         section_index = SectionIndex.model_validate(analysis.section_index_json)
     except (TypeError, ValueError):
@@ -872,7 +1292,24 @@ def _content_summary(
         user_recommendation=user_recommendation,
         discovery_type=personal_evaluation.get("discovery_type") or triage.get("discovery_type"),
         queue=_queue_state(session, analysis, job),
+        delta_summary=_delta_summary_for(session, analysis),
     )
+
+
+def _delta_summary_for(session: Session, analysis: Analysis) -> dict | None:
+    """提取 Inbox 使用的简短认知差异摘要，不携带完整关系列表。"""
+
+    if not analysis.cognitive_compare_run_id:
+        return None
+    run = session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+    if run is None or run.status != "completed" or not run.derived_summary_json:
+        return None
+    summary = run.derived_summary_json
+    return {
+        "cognitive_gain_count": len(summary.get("cognitive_gain_claim_ids") or []),
+        "known_duplicate_count": len(summary.get("known_duplicate_claim_ids") or []),
+        "retrieval_context_status": summary.get("retrieval_context_status"),
+    }
 
 
 def _translation_response(translation: ContentTranslation, markdown: str) -> TranslationResponse:
@@ -1019,6 +1456,7 @@ def _analysis_response(session: Session, analysis: Analysis) -> AnalysisResponse
         triage=analysis.triage_json,
         content_analysis=analysis.content_analysis_json,
         personal_evaluation=analysis.personal_evaluation_json,
+        retrieval_context_status=analysis.retrieval_context_status,
         created_at=analysis.created_at,
         completed_at=analysis.completed_at,
         queue=_queue_state(session, analysis, job),
@@ -1119,6 +1557,32 @@ def _get_or_create_profile(session: Session) -> UserProfileRecord:
     return profile
 
 
+def _get_or_create_user_state(session: Session) -> CurrentUserStateRecord:
+    """读取当前阅读状态；首次访问时创建空状态。"""
+
+    record = session.get(CurrentUserStateRecord, "default")
+    if record is None:
+        record = CurrentUserStateRecord(id="default")
+        session.add(record)
+        session.commit()
+    return record
+
+
+def _user_state_response(record: CurrentUserStateRecord) -> CurrentUserStateResponse:
+    """将状态持久化字段转换为稳定 API 契约。"""
+
+    return CurrentUserStateResponse(
+        active_goals=list(record.active_goals_json),
+        active_questions=list(record.active_questions_json),
+        focus_context=record.focus_context,
+        available_minutes=record.available_minutes,
+        preferred_depth=record.preferred_depth,
+        exploration_level=record.exploration_level,
+        valid_until=record.valid_until,
+        updated_at=record.updated_at,
+    )
+
+
 def _profile_response(profile: UserProfileRecord) -> ProfileResponse:
     """将画像持久化字段转换为稳定 API 契约。"""
 
@@ -1161,6 +1625,239 @@ def _feedback_response(feedback: ArticleFeedback) -> FeedbackResponse:
         model=feedback.model,
         prompt_version=feedback.prompt_version,
         updated_at=feedback.updated_at,
+    )
+
+
+def _memory_revision_response(revision: CognitiveMemoryRevision) -> MemoryRevisionResponse:
+    """把不可变版本转换为稳定 API 契约。"""
+
+    return MemoryRevisionResponse(
+        id=revision.id,
+        cognitive_memory_id=revision.cognitive_memory_id,
+        version=revision.version,
+        statement=revision.statement,
+        awareness_state=revision.awareness_state,
+        stance=revision.stance,
+        lifecycle=revision.lifecycle,
+        confidence=revision.confidence,
+        topics=list(revision.topics_json),
+        entities=list(revision.entities_json),
+        source_type=revision.source_type,
+        created_at=revision.created_at,
+        confirmed_at=revision.confirmed_at,
+    )
+
+
+def _memory_summary(session: Session, memory: CognitiveMemory) -> MemorySummaryResponse:
+    """读取 Memory 当前版本并构造列表级响应。"""
+
+    revision = session.get(CognitiveMemoryRevision, memory.current_revision_id) if memory.current_revision_id else None
+    revision_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CognitiveMemoryRevision)
+            .where(CognitiveMemoryRevision.cognitive_memory_id == memory.id)
+        )
+        or 0
+    )
+    return MemorySummaryResponse(
+        id=memory.id,
+        current_revision=_memory_revision_response(revision) if revision else None,
+        created_at=memory.created_at,
+        revision_count=revision_count,
+    )
+
+
+def _proposal_response(proposal: MemoryChangeProposal) -> MemoryProposalResponse:
+    """把内部 Proposal 记录转换为稳定 API 契约。"""
+
+    return MemoryProposalResponse(
+        id=proposal.id,
+        action=proposal.action,
+        target_memory_id=proposal.target_memory_id,
+        expected_current_revision_id=proposal.expected_current_revision_id,
+        candidate_memory_revision_ids=list(proposal.candidate_memory_revision_ids_json),
+        proposed_statement=proposal.proposed_statement,
+        proposed_awareness_state=proposal.proposed_awareness_state,
+        proposed_stance=proposal.proposed_stance,
+        proposed_lifecycle=proposal.proposed_lifecycle,
+        evidence_claim_ids=list(proposal.evidence_claim_ids_json),
+        reason=proposal.reason,
+        status=proposal.status,
+        created_at=proposal.created_at,
+        decided_at=proposal.decided_at,
+    )
+
+
+def _memory_write_response(
+    session: Session,
+    outcome: str,
+    memory_id: str | None,
+    proposal_id: str | None,
+    match,
+) -> MemoryWriteResponse:
+    """按匹配结果构造写入响应；proposal 场景不返回 Memory。"""
+
+    memory = _memory_summary(session, session.get(CognitiveMemory, memory_id)) if memory_id else None
+    return MemoryWriteResponse(
+        outcome=outcome,
+        memory=memory,
+        proposal_id=proposal_id,
+        match_source=match.match_source,
+        reason=match.reason,
+    )
+
+
+def _claim_response_rows(rows: list[ContentClaim]) -> list[ContentClaimContract]:
+    """把行级 ORM Claims 转换为详情页契约对象。"""
+
+    return [
+        ContentClaimContract(
+            claim_id=item.claim_id,
+            claim=item.statement,
+            claim_type=item.claim_type,
+            claim_role=item.claim_role,
+            change_signal=item.change_signal,
+            section_ref=item.section_ref,
+            evidence=list(item.evidence_json),
+            verification=item.verification,
+            topics=list(item.topics_json),
+            entities=list(item.entities_json),
+        )
+        for item in rows
+    ]
+
+
+def _cognitive_delta(session: Session, analysis: Analysis) -> CognitiveDeltaResponse | None:
+    """读取 Compare 结果；未完成、失败或旧分析返回 None。"""
+
+    if not analysis.cognitive_compare_run_id:
+        return None
+    run = session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+    if run is None or run.status != "completed" or not run.compare_output_json:
+        return None
+    relations = run.compare_output_json.get("relations", [])
+    corrections = session.scalars(
+        select(ClaimCorrection)
+        .where(
+            ClaimCorrection.analysis_id == analysis.id,
+            ClaimCorrection.correction_type == "primary_relation",
+        )
+        .order_by(ClaimCorrection.created_at)
+    ).all()
+    # 纠错引用行级 Claim 主键，relations 使用分析内 claim_id，需要映射。
+    claim_ids_by_row = {
+        item.id: item.claim_id
+        for item in session.scalars(
+            select(ContentClaim).where(ContentClaim.analysis_id == analysis.id)
+        )
+    }
+    return CognitiveDeltaResponse(
+        retrieval_context=run.retrieval_context_json,
+        relations=relations,
+        effective_relations=_effective_relations(relations, corrections, claim_ids_by_row),
+        claim_corrections=[_claim_correction_response(item) for item in corrections],
+        derived_summary=run.derived_summary_json or {},
+    )
+
+
+def _effective_relations(
+    relations: list[dict],
+    corrections: list[ClaimCorrection],
+    claim_ids_by_row: dict[str, str],
+) -> list[dict]:
+    """把最新 primary_relation 纠错应用到展示值；原始 relations 不变。"""
+
+    latest_by_claim: dict[str, ClaimCorrection] = {}
+    for correction in corrections:
+        claim_id = claim_ids_by_row.get(correction.content_claim_id)
+        if claim_id is not None:
+            latest_by_claim[claim_id] = correction
+    effective = []
+    for relation in relations:
+        claim_id = relation.get("current_claim_id")
+        correction = latest_by_claim.get(claim_id)
+        if correction is None or not claim_id:
+            effective.append(relation)
+            continue
+        item = dict(relation)
+        item["primary_relation"] = correction.corrected_value
+        item["original_primary_relation"] = relation.get("primary_relation")
+        effective.append(item)
+    return effective
+
+
+def _claim_correction_response(correction: ClaimCorrection) -> ClaimCorrectionResponse:
+    """把纠错记录转换为稳定 API 契约。"""
+
+    return ClaimCorrectionResponse(
+        id=correction.id,
+        analysis_id=correction.analysis_id,
+        content_claim_id=correction.content_claim_id,
+        correction_type=correction.correction_type,
+        original_value=correction.original_value,
+        corrected_value=correction.corrected_value,
+        matched_memory_revision_ids=list(correction.matched_memory_revision_ids_json),
+        evidence_status=correction.evidence_status,
+        reason=correction.reason,
+        created_at=correction.created_at,
+    )
+
+
+def _load_analysis_claim(
+    session: Session, analysis_id: str, claim_id: str
+) -> ContentClaim:
+    """校验 Claim 属于指定分析并返回行级记录。"""
+
+    claim = session.scalar(
+        select(ContentClaim).where(
+            ContentClaim.analysis_id == analysis_id,
+            ContentClaim.claim_id == claim_id,
+        )
+    )
+    if claim is None:
+        raise HTTPException(status_code=404, detail="该分析中不存在此 Claim")
+    return claim
+
+
+def _correction_original_value(
+    claim: ContentClaim,
+    run: CognitiveCompareRun | None,
+    correction_type: str,
+) -> str:
+    """读取纠错对象的原始值：关系来自 Compare，角色来自行级 Claim。"""
+
+    if correction_type == "claim_role":
+        return claim.claim_role
+    if run is not None and run.compare_output_json:
+        for relation in run.compare_output_json.get("relations", []):
+            if relation.get("current_claim_id") == claim.claim_id:
+                return relation.get("primary_relation", "new")
+    return "new"
+
+
+def _compare_run_response(session: Session, run: CognitiveCompareRun) -> CompareRunResponse:
+    """把 CompareRun 转换为诊断接口契约。"""
+
+    delta = _cognitive_delta(session, session.get(Analysis, run.analysis_id))
+    return CompareRunResponse(
+        id=run.id,
+        analysis_id=run.analysis_id,
+        status=run.status,
+        current_claim_ids=list(run.current_claim_ids_json),
+        current_memory_candidate_revision_ids=list(
+            run.current_memory_candidate_revision_ids_json
+        ),
+        historical_memory_candidate_revision_ids=list(
+            run.historical_memory_candidate_revision_ids_json
+        ),
+        retrieval_context=run.retrieval_context_json,
+        delta=delta,
+        model=run.model,
+        prompt_version=run.prompt_version,
+        last_error=run.last_error,
+        created_at=run.created_at,
+        completed_at=run.completed_at,
     )
 
 

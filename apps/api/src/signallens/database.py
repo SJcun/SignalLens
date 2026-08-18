@@ -66,8 +66,20 @@ def create_schema() -> None:
         AnalysisSchedule,
         ArticleFeedback,
         AuthSession,
+        ClaimCorrection,
+        ClaimFeedbackEvent,
+        CognitiveCompareRun,
+        CognitiveMemory,
+        CognitiveMemoryEvidence,
+        CognitiveMemoryRevision,
         Content,
+        ContentClaim,
+        ContentRevision,
         ContentTranslation,
+        CurrentUserStateRecord,
+        CurrentUserStateSnapshot,
+        MemoryChangeProposal,
+        MemoryConfirmationEvent,
         PluginApiKey,
         UserProfileRecord,
     )
@@ -81,6 +93,18 @@ def create_schema() -> None:
         ContentTranslation,
         PluginApiKey,
         UserProfileRecord,
+        ContentClaim,
+        ContentRevision,
+        CognitiveMemory,
+        CognitiveMemoryRevision,
+        CognitiveMemoryEvidence,
+        MemoryChangeProposal,
+        MemoryConfirmationEvent,
+        CurrentUserStateRecord,
+        CurrentUserStateSnapshot,
+        CognitiveCompareRun,
+        ClaimFeedbackEvent,
+        ClaimCorrection,
     )
 
     Base.metadata.create_all(engine)
@@ -90,6 +114,12 @@ def create_schema() -> None:
     _add_sqlite_column("analysis_jobs", "immediate_requested_at", "DATETIME")
     _add_sqlite_column("analyses", "source_hash", "VARCHAR(64)")
     _add_sqlite_column("analyses", "section_index_json", "JSON")
+    # Memory V1：新分析关联正文 Revision、State 快照和 Compare Run；
+    # 旧分析这些字段保持空，标记为 legacy，不伪造 Delta。
+    _add_sqlite_column("analyses", "content_revision_id", "VARCHAR(36)")
+    _add_sqlite_column("analyses", "current_user_state_snapshot_id", "VARCHAR(36)")
+    _add_sqlite_column("analyses", "cognitive_compare_run_id", "VARCHAR(36)")
+    _add_sqlite_column("analyses", "retrieval_context_status", "VARCHAR(16)")
 
     with SessionLocal.begin() as session:
         # 早期版本按随机 capture_id 保存，可能为同一网页创建多条内容。

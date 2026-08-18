@@ -5,15 +5,18 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from .compare import CognitiveCompare
 from .prompts import (
     ANALYZE_SYSTEM_PROMPT,
+    COMPARE_SYSTEM_PROMPT,
     EVALUATE_SYSTEM_PROMPT,
     TRIAGE_SYSTEM_PROMPT,
     analyze_input,
+    compare_input,
     evaluate_input,
     triage_input,
 )
-from .schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
+from .schemas import AnalyzeContent, CurrentUserState, EvaluateForUser, TriageContent, UserProfile
 from .sections import SectionIndex
 
 OutputModel = TypeVar("OutputModel", bound=BaseModel)
@@ -98,11 +101,44 @@ def run_personal_evaluation(
     provider: StructuredOutputProvider,
     analysis: AnalyzeContent,
     profile: UserProfile,
+    user_state: CurrentUserState | None = None,
+    delta_summary: dict | None = None,
 ) -> EvaluateForUser:
-    """结合最小画像执行最终阅读建议评估。"""
+    """结合最小画像、当前阅读状态与代码生成的认知差异执行最终评估。
+
+    delta_summary 为空（Memory 为空、召回失败或 Compare 失败）时，
+    Evaluate 回退到保守逻辑，不得声称用户已知具体内容。
+    """
 
     return provider.complete(
         system_prompt=EVALUATE_SYSTEM_PROMPT,
-        user_prompt=evaluate_input(analysis, profile),
+        user_prompt=evaluate_input(
+            analysis,
+            profile,
+            user_state or CurrentUserState(),
+            delta_summary,
+        ),
         output_model=EvaluateForUser,
+    )
+
+
+def run_cognitive_compare(
+    provider: StructuredOutputProvider,
+    *,
+    claims: list[dict],
+    current_candidates: list[dict],
+    historical_candidates: list[dict],
+    retrieval_context: dict,
+) -> CognitiveCompare:
+    """执行逐 Claim 认知比较；结构校验由调用方完成。"""
+
+    return provider.complete(
+        system_prompt=COMPARE_SYSTEM_PROMPT,
+        user_prompt=compare_input(
+            claims,
+            current_candidates,
+            historical_candidates,
+            retrieval_context,
+        ),
+        output_model=CognitiveCompare,
     )

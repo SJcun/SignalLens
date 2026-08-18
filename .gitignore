@@ -28,6 +28,10 @@ data/*
 *.db-shm
 *.db-wal
 
+# 测试运行生成的初始凭据（含明文密码，只允许本地临时存在）
+apps/api/tests/initial-admin-password.txt
+apps/api/tests/initial-admin-password.txt.tmp
+
 # 编辑器和操作系统文件
 .idea/
 .vscode/

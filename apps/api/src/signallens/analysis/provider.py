@@ -191,3 +191,20 @@ class OpenAICompatibleProvider:
 
         hostname = urlparse(self.base_url).hostname or ""
         return hostname == "deepseek.com" or hostname.endswith(".deepseek.com")
+
+
+def build_provider_from_settings() -> OpenAICompatibleProvider | None:
+    """按运行配置构造 Provider；未配置 LLM 时返回 None。"""
+
+    from ..settings import get_settings
+
+    settings = get_settings()
+    if not settings.llm_api_key or not settings.llm_model:
+        return None
+    return OpenAICompatibleProvider(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        response_format_mode=settings.llm_response_format,
+        max_tokens=settings.llm_max_tokens,
+    )

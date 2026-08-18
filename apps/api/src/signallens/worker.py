@@ -6,29 +6,49 @@ from dataclasses import dataclass
 
 from sqlalchemy import case, func, select, update
 
+from .analysis.claims import (
+    ensure_content_revision,
+    persist_claims,
+    with_normalized_claims,
+)
+from .analysis.compare import (
+    derive_delta_summary,
+    validate_compare_output,
+)
 from .analysis.pipeline import (
     AnalysisInput,
     StructuredOutputProvider,
+    run_cognitive_compare,
     run_content_analysis,
     run_personal_evaluation,
     run_triage,
 )
 from .analysis.prompts import PROMPT_VERSION
-from .analysis.provider import OpenAICompatibleProvider
-from .analysis.schemas import AnalyzeContent, EvaluateForUser, TriageContent, UserProfile
+from .analysis.provider import build_provider_from_settings
+from .analysis.retrieval import retrieve_memory_candidates
+from .analysis.schemas import (
+    AnalyzeContent,
+    CurrentUserState,
+    EvaluateForUser,
+    TriageContent,
+    UserProfile,
+)
 from .analysis.sections import SectionIndex, build_section_index, validate_guided_flow
 from .database import SessionLocal, create_schema
 from .models import (
     Analysis,
     AnalysisJob,
     AnalysisSchedule,
+    CognitiveCompareRun,
+    CognitiveMemoryRevision,
     Content,
     ContentTranslation,
+    CurrentUserStateRecord,
+    CurrentUserStateSnapshot,
     UserProfileRecord,
     utc_now,
 )
 from .scheduling import is_within_windows
-from .settings import get_settings
 from .translation import (
     TRANSLATION_PROMPT_VERSION,
     content_source_hash,
@@ -48,6 +68,7 @@ class ClaimedAnalysisJob:
     content: AnalysisInput
     triage: TriageContent | None
     content_analysis: AnalyzeContent | None
+    content_revision_id: str | None
 
 
 def pending_job_count() -> int:
@@ -91,12 +112,28 @@ def process_next_job(
             elif stage == "analyze" and triage is not None:
                 content_analysis = run_content_analysis(provider, claimed.content, triage)
                 _save_content_analysis(analysis_id, content_analysis)
+                stage = "persist_claims"
+            elif stage == "persist_claims":
+                # 系统分配稳定 claim_id 并把 Claims 落为行级记录；
+                # 旧分析缺少正文 Revision 时只持久化，不进入正式 Compare。
+                _persist_claims(analysis_id)
+                stage = "retrieve_memory"
+            elif stage == "retrieve_memory":
+                # 代码执行 current / historical 候选召回并计算召回上下文。
+                _retrieve_memory_candidates(analysis_id)
+                stage = "compare"
+            elif stage == "compare":
+                _run_compare_stage(provider, analysis_id)
                 stage = "evaluate"
             elif stage == "evaluate" and content_analysis is not None:
+                user_state = _ensure_user_state_snapshot(analysis_id)
+                delta_summary = _evaluation_delta_summary(analysis_id)
                 evaluation = run_personal_evaluation(
                     provider,
                     content_analysis,
                     user_profile,
+                    user_state,
+                    delta_summary,
                 )
                 _save_evaluation(analysis_id, evaluation, content_analysis)
                 return True
@@ -189,6 +226,11 @@ def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
         if analysis.source_hash is None:
             analysis.source_hash = source_hash
             analysis.section_index_json = _section_index_json(content.markdown, content.title)
+            # 首次领取的新分析固定关联当前正文 Revision，旧 Claims 有快照可追溯。
+            revision = ensure_content_revision(
+                session, content.id, source_hash, content.title, content.markdown
+            )
+            analysis.content_revision_id = revision.id
         elif analysis.source_hash != source_hash:
             analysis.source_hash = source_hash
             analysis.section_index_json = _section_index_json(content.markdown, content.title)
@@ -196,6 +238,10 @@ def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
             analysis.content_analysis_json = None
             analysis.personal_evaluation_json = None
             analysis.completed_at = None
+            revision = ensure_content_revision(
+                session, content.id, source_hash, content.title, content.markdown
+            )
+            analysis.content_revision_id = revision.id
             job.stage = "triage"
         return ClaimedAnalysisJob(
             analysis_id=analysis.id,
@@ -219,10 +265,13 @@ def _claim_next_job(model: str) -> ClaimedAnalysisJob | None:
                 else None
             ),
             content_analysis=(
-                AnalyzeContent.model_validate(analysis.content_analysis_json)
+                AnalyzeContent.model_validate(
+                    with_normalized_claims(analysis.content_analysis_json)
+                )
                 if analysis.content_analysis_json
                 else None
             ),
+            content_revision_id=analysis.content_revision_id,
         )
 
 
@@ -315,6 +364,83 @@ def _load_user_profile() -> UserProfile:
         )
 
 
+def _ensure_user_state_snapshot(analysis_id: str) -> CurrentUserState:
+    """Evaluate 前创建或复用不可变的 Current User State 快照。
+
+    快照只创建一次：暂停后续跑时保持当时看到的状态，不随用户修改漂移。
+    状态过期或为空时使用保守默认值，不阻止分析。
+    """
+
+    with SessionLocal.begin() as session:
+        analysis = session.get(Analysis, analysis_id)
+        if analysis is None:
+            raise RuntimeError(f"分析任务不存在：{analysis_id}")
+        if analysis.current_user_state_snapshot_id is not None:
+            snapshot = session.get(
+                CurrentUserStateSnapshot, analysis.current_user_state_snapshot_id
+            )
+            if snapshot is not None:
+                return CurrentUserState.model_validate(snapshot.payload_json)
+
+        # 快照始终保存完整字段结构；状态过期或未设置时全部使用保守默认值。
+        payload = {
+            "active_goals": [],
+            "active_questions": [],
+            "focus_context": None,
+            "available_minutes": None,
+            "preferred_depth": None,
+            "exploration_level": None,
+        }
+        record = session.get(CurrentUserStateRecord, "default")
+        if record is not None and not _state_expired(record.valid_until):
+            payload.update(
+                {
+                    "active_goals": list(record.active_goals_json),
+                    "active_questions": list(record.active_questions_json),
+                    "focus_context": record.focus_context,
+                    "available_minutes": record.available_minutes,
+                    "preferred_depth": record.preferred_depth,
+                    "exploration_level": record.exploration_level,
+                }
+            )
+        snapshot = CurrentUserStateSnapshot(analysis_id=analysis.id, payload_json=payload)
+        session.add(snapshot)
+        session.flush()
+        analysis.current_user_state_snapshot_id = snapshot.id
+        return CurrentUserState.model_validate(payload)
+
+
+def _state_expired(valid_until) -> bool:
+    """判断当前状态是否过期；无有效期视为长期有效。"""
+
+    if valid_until is None:
+        return False
+    if valid_until.tzinfo is None:
+        valid_until = valid_until.replace(tzinfo=utc_now().tzinfo)
+    return valid_until <= utc_now()
+
+
+def _evaluation_delta_summary(analysis_id: str) -> dict | None:
+    """读取 Compare 结果作为 Evaluate 的认知差异输入。
+
+    Compare 未完成、失败或旧分析时返回 None，Evaluate 走保守逻辑；
+    不生成占位 Delta，也不把召回失败当成用户无知。
+    """
+
+    with SessionLocal() as session:
+        analysis = session.get(Analysis, analysis_id)
+        if analysis is None or not analysis.cognitive_compare_run_id:
+            return None
+        run = session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+        if run is None or run.status != "completed" or not run.derived_summary_json:
+            return None
+        summary = dict(run.derived_summary_json)
+        # 附上召回上下文与逐 Claim 证据，供 Evaluate 引用而不是自行发明。
+        summary["retrieval_context"] = run.retrieval_context_json
+        summary["relations"] = (run.compare_output_json or {}).get("relations", [])
+        return summary
+
+
 def _save_triage(analysis_id: str, triage: TriageContent) -> None:
     """持久化快速分诊结果并推进到正文分析阶段。"""
 
@@ -325,11 +451,200 @@ def _save_triage(analysis_id: str, triage: TriageContent) -> None:
 
 
 def _save_content_analysis(analysis_id: str, result: AnalyzeContent) -> None:
-    """持久化内容本体分析并推进到个性化评估阶段。"""
+    """持久化内容本体分析并推进到 Claims 落库阶段。"""
 
     with SessionLocal.begin() as session:
         analysis, job = _load_running_task(session, analysis_id)
         analysis.content_analysis_json = result.model_dump(mode="json")
+        job.stage = "persist_claims"
+
+
+def _persist_claims(analysis_id: str) -> None:
+    """把当前分析的 Claims 分配稳定 ID 并写入行级记录。"""
+
+    with SessionLocal.begin() as session:
+        analysis, job = _load_running_task(session, analysis_id)
+        persist_claims(
+            session,
+            analysis_id=analysis.id,
+            content_revision_id=analysis.content_revision_id,
+            model=analysis.model,
+            prompt_version=analysis.prompt_version,
+        )
+        job.stage = "retrieve_memory"
+
+
+def _analysis_claim_dicts(session, analysis_id: str) -> list[dict]:
+    """从 content_analysis_json 读取带稳定 claim_id 的 Claims 字典。"""
+
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None or not analysis.content_analysis_json:
+        return []
+    payload = with_normalized_claims(dict(analysis.content_analysis_json))
+    claims = payload.get("claims") or []
+    return [
+        item
+        for item in claims
+        if isinstance(item, dict) and item.get("claim_id") and item.get("claim")
+    ]
+
+
+def _retrieve_memory_candidates(analysis_id: str) -> None:
+    """创建或复用 CompareRun，并保存本次 current / historical 候选。"""
+
+    with SessionLocal.begin() as session:
+        analysis, job = _load_running_task(session, analysis_id)
+        existing_run = None
+        if analysis.cognitive_compare_run_id:
+            existing_run = session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+        claims = _analysis_claim_dicts(session, analysis_id)
+        if not claims:
+            # 没有可比较的 Claims：创建完成的空 Run，Evaluate 走保守逻辑。
+            if existing_run is None:
+                existing_run = CognitiveCompareRun(
+                    analysis_id=analysis_id,
+                    current_claim_ids_json=[],
+                    model=analysis.model,
+                    prompt_version=analysis.prompt_version,
+                    status="completed",
+                    completed_at=utc_now(),
+                )
+                session.add(existing_run)
+                session.flush()
+                analysis.cognitive_compare_run_id = existing_run.id
+            analysis.retrieval_context_status = "insufficient"
+            job.stage = "evaluate"
+            return
+
+        result = retrieve_memory_candidates(session, claims)
+        if existing_run is None:
+            existing_run = CognitiveCompareRun(
+                analysis_id=analysis_id,
+                current_claim_ids_json=[item["claim_id"] for item in claims],
+                current_memory_candidate_revision_ids_json=result.current_revision_ids,
+                historical_memory_candidate_revision_ids_json=result.historical_revision_ids,
+                retrieval_context_json=result.context.as_dict(),
+                model=analysis.model,
+                prompt_version=analysis.prompt_version,
+            )
+            session.add(existing_run)
+            session.flush()
+            analysis.cognitive_compare_run_id = existing_run.id
+        else:
+            existing_run.current_claim_ids_json = [item["claim_id"] for item in claims]
+            existing_run.current_memory_candidate_revision_ids_json = result.current_revision_ids
+            existing_run.historical_memory_candidate_revision_ids_json = (
+                result.historical_revision_ids
+            )
+            existing_run.retrieval_context_json = result.context.as_dict()
+            existing_run.model = analysis.model
+            existing_run.prompt_version = analysis.prompt_version
+            existing_run.status = "pending"
+            existing_run.compare_output_json = None
+            existing_run.derived_summary_json = None
+            existing_run.last_error = None
+            existing_run.completed_at = None
+        analysis.retrieval_context_status = result.context.status
+        job.stage = "compare"
+
+
+def _run_compare_stage(provider: StructuredOutputProvider, analysis_id: str) -> None:
+    """执行逐 Claim 认知比较并持久化 Delta；失败时保守降级到 Evaluate。
+
+    召回错误或模型失败不生成占位 Delta，Analysis 仍继续 Evaluate；
+    CompareRun 保留失败原因，用户可单独重试 Compare。
+    """
+
+    with SessionLocal.begin() as session:
+        analysis, job = _load_running_task(session, analysis_id)
+        run = session.get(CognitiveCompareRun, analysis.cognitive_compare_run_id)
+        if run is None:
+            # 旧分析没有 CompareRun（legacy）：跳过 Compare，保守 Evaluate。
+            job.stage = "evaluate"
+            return
+        if run.status == "completed":
+            job.stage = "evaluate"
+            return
+
+        claims = _analysis_claim_dicts(session, analysis_id)
+        current_ids = list(run.current_memory_candidate_revision_ids_json)
+        historical_ids = list(run.historical_memory_candidate_revision_ids_json)
+        if run.retrieval_context_json.get("retrieval_error"):
+            run.status = "failed"
+            run.last_error = "召回失败：" + str(run.retrieval_context_json.get("retrieval_error"))
+            run.completed_at = utc_now()
+            job.stage = "evaluate"
+            return
+
+        revisions = {}
+        if current_ids or historical_ids:
+            rows = session.scalars(
+                select(CognitiveMemoryRevision).where(
+                    CognitiveMemoryRevision.id.in_(current_ids + historical_ids)
+                )
+            ).all()
+            revisions = {item.id: item for item in rows}
+
+        def _candidate_dicts(revision_ids: list[str]) -> list[dict]:
+            return [
+                {
+                    "revision_id": revision.id,
+                    "memory_id": revision.cognitive_memory_id,
+                    "statement": revision.statement,
+                    "awareness_state": revision.awareness_state,
+                    "stance": revision.stance,
+                    "lifecycle": revision.lifecycle,
+                    "version": revision.version,
+                    "topics": list(revision.topics_json),
+                    "entities": list(revision.entities_json),
+                }
+                for revision_id in revision_ids
+                if (revision := revisions.get(revision_id)) is not None
+            ]
+
+        current_candidates = _candidate_dicts(current_ids)
+        historical_candidates = _candidate_dicts(historical_ids)
+        run.status = "running"
+        run.model = analysis.model
+        run.prompt_version = PROMPT_VERSION
+        try:
+            output = run_cognitive_compare(
+                provider,
+                claims=claims,
+                current_candidates=current_candidates,
+                historical_candidates=historical_candidates,
+                retrieval_context=run.retrieval_context_json,
+            )
+            validate_compare_output(
+                output,
+                claim_ids=[item["claim_id"] for item in claims],
+                current_candidate_ids=current_ids,
+                historical_candidate_ids=historical_ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - 模型或结构校验失败统一降级
+            run.status = "failed"
+            run.last_error = str(exc)
+            run.completed_at = utc_now()
+            job.stage = "evaluate"
+            return
+
+        awareness = {
+            revision_id: revision.awareness_state
+            for revision_id, revision in revisions.items()
+        }
+        run.compare_output_json = output.model_dump(mode="json")
+        run.derived_summary_json = derive_delta_summary(
+            output,
+            claims=claims,
+            current_candidate_ids=current_ids,
+            historical_candidate_ids=historical_ids,
+            current_revision_awareness=awareness,
+            retrieval_context=run.retrieval_context_json,
+        )
+        run.status = "completed"
+        run.completed_at = utc_now()
+        run.last_error = None
+        analysis.retrieval_context_status = run.retrieval_context_json.get("status")
         job.stage = "evaluate"
 
 
@@ -458,20 +773,12 @@ def run() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     create_schema()
-    settings = get_settings()
     LOGGER.info("SignalLens Worker 已启动，待处理任务：%s", pending_job_count())
-    if not settings.llm_api_key or not settings.llm_model:
+    provider = build_provider_from_settings()
+    if provider is None:
         LOGGER.warning("未配置 LLM，Worker 仅保持运行，不消费任务")
         while True:
             time.sleep(5)
-
-    provider = OpenAICompatibleProvider(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        response_format_mode=settings.llm_response_format,
-        max_tokens=settings.llm_max_tokens,
-    )
     while True:
         analysis_processed = process_next_job(provider)
         translation_processed = process_next_translation(provider)
