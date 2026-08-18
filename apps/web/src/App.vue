@@ -16,6 +16,8 @@ const themeToggleIcon = computed(() => (theme.value === 'dark' ? '☀' : '☾'))
 const navigation = [
   { to: '/inbox', label: 'Inbox' },
   { to: '/preferences', label: '阅读偏好' },
+  { to: '/user-state', label: '当前状态' },
+  { to: '/memory', label: '认知记忆' },
   { to: '/analysis-schedule', label: '整理设置' },
   { to: '/stats', label: '统计' },
   { to: '/account', label: '账户' },

@@ -6,8 +6,10 @@ import AnalysisScheduleView from './views/AnalysisScheduleView.vue'
 import ContentDetailView from './views/ContentDetailView.vue'
 import InboxView from './views/InboxView.vue'
 import LoginView from './views/LoginView.vue'
+import MemoryView from './views/MemoryView.vue'
 import PreferencesView from './views/PreferencesView.vue'
 import StatsView from './views/StatsView.vue'
+import UserStateView from './views/UserStateView.vue'
 
 /** 登录页公开，其余页面必须持有后端会话令牌。 */
 export const router = createRouter({
@@ -18,6 +20,8 @@ export const router = createRouter({
     { path: '/contents/:contentId', component: ContentDetailView },
     { path: '/preferences', component: PreferencesView },
     { path: '/analysis-schedule', component: AnalysisScheduleView },
+    { path: '/user-state', component: UserStateView },
+    { path: '/memory', component: MemoryView },
     { path: '/stats', component: StatsView },
     { path: '/account', component: AccountView },
     { path: '/login', component: LoginView, meta: { public: true } },

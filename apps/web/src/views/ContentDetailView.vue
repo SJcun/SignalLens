@@ -14,6 +14,7 @@ import {
   type Recommendation,
   type SectionRef,
 } from '../api'
+import CognitiveDeltaSection from '../components/CognitiveDeltaSection.vue'
 import { renderMarkdown } from '../markdown'
 
 const recommendationText: Record<Recommendation, string> = {
@@ -487,6 +488,14 @@ const submitFeedback = useMutation({
         <h2>快速分诊结论</h2>
         <p>{{ content.data.value.triage.reason }}</p>
       </article>
+
+      <CognitiveDeltaSection
+        v-if="content.data.value.cognitive_delta && content.data.value.claims?.length"
+        :content-id="contentId"
+        :analysis-id="content.data.value.analysis_id"
+        :claims="content.data.value.claims"
+        :delta="content.data.value.cognitive_delta"
+      />
 
       <form
         v-if="content.data.value.analysis_status === 'completed'"

@@ -34,7 +34,14 @@ export interface GeneratedPluginKey {
 export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'failed'
 
 export interface AnalysisQueueState {
-  stage: 'triage' | 'analyze' | 'evaluate' | 'completed'
+  stage:
+    | 'triage'
+    | 'analyze'
+    | 'persist_claims'
+    | 'retrieve_memory'
+    | 'compare'
+    | 'evaluate'
+    | 'completed'
   execution_mode: 'scheduled' | 'immediate'
   waiting_for_schedule: boolean
   next_eligible_at: string | null
@@ -73,11 +80,42 @@ export interface ContentMapItem {
   summary: string
 }
 
+export type ClaimType =
+  | 'fact'
+  | 'interpretation'
+  | 'opinion'
+  | 'prediction'
+  | 'recommendation'
+  | 'definition'
+export type ClaimRole = 'core' | 'supporting' | 'detail'
+export type ChangeSignal = 'none' | 'temporal' | 'version' | 'replacement' | 'deprecation'
+export type PrimaryRelation =
+  | 'duplicate'
+  | 'extends'
+  | 'complements'
+  | 'contradicts'
+  | 'updates'
+  | 'new'
+
+export interface ContentClaim {
+  claim_id: string | null
+  claim: string
+  claim_type: ClaimType
+  claim_role: ClaimRole
+  change_signal: ChangeSignal
+  section_ref: string | null
+  evidence: string[]
+  verification: 'supported_in_content' | 'unverified' | 'opinion'
+  topics: string[]
+  entities: string[]
+}
+
 export interface ContentAnalysisResult {
   one_sentence_summary: string
   summary: string
   content_map: ContentMapItem[]
   key_points: string[]
+  claims: ContentClaim[]
   counterarguments: string[]
   limitations: string[]
   unresolved_questions: string[]
@@ -192,6 +230,12 @@ export interface ContentSummary {
   user_recommendation: Recommendation | null
   discovery_type: string | null
   queue: AnalysisQueueState
+  /** Inbox 使用的简短认知差异摘要；Compare 未完成或旧分析时为空。 */
+  delta_summary: {
+    cognitive_gain_count: number
+    known_duplicate_count: number
+    retrieval_context_status: 'sufficient' | 'partial' | 'insufficient' | null
+  } | null
 }
 
 export interface TranslationBlock {
@@ -234,6 +278,45 @@ export interface SectionIndex {
   sections: SectionRef[]
 }
 
+export interface CompareMatch {
+  memory_revision_id: string
+  candidate_kind: 'current' | 'historical'
+  relation: Exclude<PrimaryRelation, 'new'>
+  reason: string
+}
+
+export interface CompareRelation {
+  current_claim_id: string
+  primary_relation: PrimaryRelation
+  matches: CompareMatch[]
+  added_information: string | null
+  conflict_summary: string | null
+  reason: string
+  confidence: 'low' | 'medium' | 'high'
+}
+
+export interface ClaimCorrection {
+  id: string
+  analysis_id: string
+  content_claim_id: string
+  correction_type: 'primary_relation' | 'claim_role'
+  original_value: string
+  corrected_value: string
+  matched_memory_revision_ids: string[]
+  evidence_status: 'complete' | 'incomplete' | 'not_applicable'
+  reason: string | null
+  created_at: string
+}
+
+export interface CognitiveDelta {
+  retrieval_context: Record<string, unknown>
+  relations: CompareRelation[]
+  /** 应用最新用户纠错后的展示值；原始 relations 保持不变。 */
+  effective_relations: CompareRelation[]
+  claim_corrections: ClaimCorrection[]
+  derived_summary: Record<string, unknown>
+}
+
 export interface ContentDetail extends ContentSummary {
   markdown: string
   source_language: string
@@ -246,6 +329,12 @@ export interface ContentDetail extends ContentSummary {
   section_index: SectionIndex | null
   /** 是否启用顺序式引导阅读流；false 时正文整体退回完整原文。 */
   guided_flow_available: boolean
+  /** 本次分析的行级 Claims；旧分析为空时回退读取 content_analysis.claims。 */
+  claims: ContentClaim[] | null
+  /** 本次分析的认知差异；Compare 未完成、失败或旧分析时为空。 */
+  cognitive_delta: CognitiveDelta | null
+  /** 代码计算的召回上下文状态；旧分析或未执行 Compare 时为空。 */
+  retrieval_context_status: 'sufficient' | 'partial' | 'insufficient' | null
 }
 
 export interface CaptureAccepted {
@@ -434,4 +523,276 @@ export async function decideCalibrationSuggestion(
     },
   )
   return apiResponse<CalibrationSuggestion>(response)
+}
+
+export type AwarenessState = 'known' | 'uncertain'
+export type MemoryStance = 'accept' | 'reject' | 'mixed' | 'undecided' | 'not_applicable'
+export type MemoryLifecycle = 'active' | 'obsolete'
+export type MemoryConfidence = 'low' | 'medium' | 'high'
+
+export interface MemoryRevision {
+  id: string
+  cognitive_memory_id: string
+  version: number
+  statement: string
+  awareness_state: AwarenessState
+  stance: MemoryStance
+  lifecycle: MemoryLifecycle
+  confidence: MemoryConfidence
+  topics: string[]
+  entities: string[]
+  source_type: 'manual' | 'claim_feedback' | 'accepted_proposal'
+  created_at: string
+  confirmed_at: string | null
+}
+
+export interface MemorySummary {
+  id: string
+  current_revision: MemoryRevision | null
+  created_at: string
+  revision_count: number
+}
+
+export interface MemoryConfirmationEvent {
+  id: string
+  confirmation_type:
+    | 'already_known'
+    | 'learned_now'
+    | 'awareness_confirmed'
+    | 'stance_confirmed'
+    | 'source_confirmed'
+  source_type: 'manual' | 'claim_feedback' | 'accepted_proposal'
+  content_claim_id: string | null
+  source_feedback_id: string | null
+  source_proposal_id: string | null
+  created_at: string
+}
+
+export interface MemoryDetail extends MemorySummary {
+  revisions: MemoryRevision[]
+  confirmation_events: MemoryConfirmationEvent[]
+}
+
+export interface MemoryWriteResult {
+  outcome: 'confirmed' | 'revised' | 'created' | 'proposal'
+  memory: MemorySummary | null
+  proposal_id: string | null
+  match_source: 'exact_text' | 'cognitive_delta' | 'entity_topic' | 'none'
+  reason: string
+}
+
+export type MemoryProposalAction =
+  | 'CREATE'
+  | 'REVISE'
+  | 'MARK_OBSOLETE'
+  | 'REACTIVATE'
+  | 'RESOLVE_MATCH'
+
+export interface MemoryProposal {
+  id: string
+  action: MemoryProposalAction
+  target_memory_id: string | null
+  expected_current_revision_id: string | null
+  candidate_memory_revision_ids: string[]
+  proposed_statement: string | null
+  proposed_awareness_state: string | null
+  proposed_stance: string | null
+  proposed_lifecycle: string | null
+  evidence_claim_ids: string[]
+  reason: string | null
+  status: 'pending' | 'accepted' | 'rejected' | 'stale'
+  created_at: string
+  decided_at: string | null
+}
+
+export interface CurrentUserState {
+  active_goals: string[]
+  active_questions: string[]
+  focus_context: string | null
+  available_minutes: number | null
+  preferred_depth: 'quick' | 'balanced' | 'deep' | null
+  exploration_level: 'low' | 'medium' | 'high' | null
+  valid_until: string | null
+  updated_at: string
+}
+
+export type CurrentUserStateUpdate = Omit<CurrentUserState, 'updated_at'>
+
+/** 获取全部认知记忆的逻辑身份与当前版本。 */
+export async function getMemories(): Promise<MemorySummary[]> {
+  const response = await authenticatedFetch('/api/v1/memory')
+  return apiResponse<MemorySummary[]>(response)
+}
+
+/** 获取单个 Memory 的完整不可变历史与确认记录。 */
+export async function getMemory(memoryId: string): Promise<MemoryDetail> {
+  const response = await authenticatedFetch(`/api/v1/memory/${encodeURIComponent(memoryId)}`)
+  return apiResponse<MemoryDetail>(response)
+}
+
+/** 手工录入认知；服务端先执行 Memory Match 再决定确认、修订或新建。 */
+export async function createMemoryEntry(payload: {
+  statement: string
+  awareness_state: AwarenessState
+  stance: MemoryStance
+  lifecycle?: MemoryLifecycle
+  confidence?: MemoryConfidence
+  topics?: string[]
+  entities?: string[]
+}): Promise<MemoryWriteResult> {
+  const response = await authenticatedFetch('/api/v1/memory', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return apiResponse<MemoryWriteResult>(response)
+}
+
+/** 为已有 Memory 追加 Revision；期望版本不匹配时后端返回冲突。 */
+export async function appendMemoryRevision(
+  memoryId: string,
+  payload: {
+    expected_current_revision_id: string
+    statement?: string | null
+    awareness_state?: AwarenessState | null
+    stance?: MemoryStance | null
+    lifecycle?: MemoryLifecycle | null
+    confidence?: MemoryConfidence | null
+  },
+): Promise<MemoryWriteResult> {
+  const response = await authenticatedFetch(
+    `/api/v1/memory/${encodeURIComponent(memoryId)}/revisions`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )
+  return apiResponse<MemoryWriteResult>(response)
+}
+
+/** 获取等待用户处理的 Memory 修改建议。 */
+export async function getMemoryProposals(): Promise<MemoryProposal[]> {
+  const response = await authenticatedFetch('/api/v1/memory/proposals')
+  return apiResponse<MemoryProposal[]>(response)
+}
+
+/** 接受或拒绝 Memory 修改建议；RESOLVE_MATCH 合并时指定目标 Memory。 */
+export async function decideMemoryProposal(
+  proposalId: string,
+  decision: 'accepted' | 'rejected',
+  mergeMemoryId?: string | null,
+): Promise<MemoryProposal> {
+  const response = await authenticatedFetch(
+    `/api/v1/memory/proposals/${encodeURIComponent(proposalId)}/decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, merge_memory_id: mergeMemoryId ?? null }),
+    },
+  )
+  return apiResponse<MemoryProposal>(response)
+}
+
+/** 获取用户显式编辑的当前阅读状态。 */
+export async function getCurrentUserState(): Promise<CurrentUserState> {
+  const response = await authenticatedFetch('/api/v1/user-state')
+  return apiResponse<CurrentUserState>(response)
+}
+
+/** 保存当前阅读状态；不根据浏览行为自动推断。 */
+export async function updateCurrentUserState(
+  payload: CurrentUserStateUpdate,
+): Promise<CurrentUserState> {
+  const response = await authenticatedFetch('/api/v1/user-state', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return apiResponse<CurrentUserState>(response)
+}
+
+export interface ClaimFeedbackResult {
+  outcome: 'confirmed' | 'revised' | 'created' | 'proposal'
+  memory_id: string | null
+  proposal_id: string | null
+  match_source: string
+  reason: string
+}
+
+/** 对具体 Claim 提交知晓 / 立场确认，进入 Memory Match 流程。 */
+export async function submitClaimFeedback(
+  analysisId: string,
+  claimId: string,
+  payload: {
+    awareness?: AwarenessState | null
+    stance?: MemoryStance | null
+    confirmation_type?: 'already_known' | 'learned_now' | 'awareness_confirmed' | 'stance_confirmed' | null
+    root_cause?: string | null
+  },
+): Promise<ClaimFeedbackResult> {
+  const response = await authenticatedFetch(
+    `/api/v1/analyses/${encodeURIComponent(analysisId)}/claims/${encodeURIComponent(claimId)}/feedback`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )
+  return apiResponse<ClaimFeedbackResult>(response)
+}
+
+/** 提交 primary_relation / claim_role 高级纠错；原始值与纠正值都保留。 */
+export async function submitClaimCorrection(
+  analysisId: string,
+  claimId: string,
+  payload: {
+    correction_type: 'primary_relation' | 'claim_role'
+    corrected_value: string
+    matched_memory_revision_ids?: string[]
+    reason?: string | null
+  },
+): Promise<ClaimCorrection> {
+  const response = await authenticatedFetch(
+    `/api/v1/analyses/${encodeURIComponent(analysisId)}/claims/${encodeURIComponent(claimId)}/correction`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )
+  return apiResponse<ClaimCorrection>(response)
+}
+
+export interface CompareRunDetail {
+  id: string
+  analysis_id: string
+  status: AnalysisStatus
+  current_claim_ids: string[]
+  current_memory_candidate_revision_ids: string[]
+  historical_memory_candidate_revision_ids: string[]
+  retrieval_context: Record<string, unknown>
+  delta: CognitiveDelta | null
+  model: string | null
+  prompt_version: string
+  last_error: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+/** 获取一次 Compare 的完整输入与结果，用于诊断。 */
+export async function getCompareRun(analysisId: string): Promise<CompareRunDetail> {
+  const response = await authenticatedFetch(
+    `/api/v1/analyses/${encodeURIComponent(analysisId)}/compare`,
+  )
+  return apiResponse<CompareRunDetail>(response)
+}
+
+/** 单独重试失败的 Compare；不重跑 Evaluate，不改写历史 Delta。 */
+export async function retryCompare(analysisId: string): Promise<{ message: string }> {
+  const response = await authenticatedFetch(
+    `/api/v1/analyses/${encodeURIComponent(analysisId)}/retry-compare`,
+    { method: 'POST' },
+  )
+  return apiResponse<{ message: string }>(response)
 }

@@ -78,6 +78,18 @@ function correctionText(item: ContentSummary): string | null {
     : '暂无建议'
   return `用户修正：${recommendationText[item.user_recommendation]} · AI 原建议：${aiText}`
 }
+
+/** Inbox 只显示简短 Delta 摘要，不堆叠复杂关系图。 */
+function deltaSummaryText(
+  summary: NonNullable<ContentSummary['delta_summary']>,
+): string {
+  if (summary.cognitive_gain_count > 0 && summary.known_duplicate_count > 0) {
+    return `认知增量 ${summary.cognitive_gain_count} · 已知 ${summary.known_duplicate_count}`
+  }
+  if (summary.cognitive_gain_count > 0) return `认知增量 ${summary.cognitive_gain_count}`
+  if (summary.known_duplicate_count > 0) return `已知重复 ${summary.known_duplicate_count}`
+  return '未发现新增'
+}
 </script>
 
 <template>
@@ -145,6 +157,9 @@ function correctionText(item: ContentSummary): string | null {
           </span>
           <span v-if="item.discovery_type === 'outside_profile_high_value'" class="explore-tag">
             认知探索
+          </span>
+          <span v-if="item.delta_summary" class="delta-tag" :title="`召回上下文：${item.delta_summary.retrieval_context_status ?? '未知'}`">
+            {{ deltaSummaryText(item.delta_summary) }}
           </span>
         </div>
       </RouterLink>

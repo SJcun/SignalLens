@@ -29,7 +29,8 @@ describe('内容详情翻译视图', () => {
       capture_quality: 'good',
       created_at: '2026-08-14T00:00:00Z',
       analysis_id: 'analysis-1',
-      analysis_status: 'completed',
+      delta_summary: null,
+    analysis_status: 'completed',
       one_sentence_summary: null,
       recommendation: null,
       ai_recommendation: null,
@@ -122,6 +123,7 @@ function guidedFlowDetail(): ContentDetail {
     capture_quality: 'good',
     created_at: '2026-08-14T00:00:00Z',
     analysis_id: 'analysis-guided',
+    delta_summary: null,
     analysis_status: 'completed',
     one_sentence_summary: '文章摘要。',
     recommendation: 'selective_read',
@@ -147,6 +149,7 @@ function guidedFlowDetail(): ContentDetail {
         { section_ref: 'sec-003', title: '第三章', summary: '第三章摘要。' },
       ],
       key_points: [],
+      claims: [],
       counterarguments: [],
       limitations: [],
       unresolved_questions: [],
@@ -179,6 +182,9 @@ function guidedFlowDetail(): ContentDetail {
       ],
     },
     guided_flow_available: true,
+    claims: null,
+    cognitive_delta: null,
+    retrieval_context_status: null,
   }
 }
 
@@ -277,6 +283,7 @@ function guidedEnglishFlowDetail(): ContentDetail {
     capture_quality: 'good',
     created_at: '2026-08-14T00:00:00Z',
     analysis_id: 'analysis-guided-en',
+    delta_summary: null,
     analysis_status: 'completed',
     one_sentence_summary: '文章摘要。',
     recommendation: 'selective_read',
@@ -404,6 +411,7 @@ function guidedEnglishFlowDetail(): ContentDetail {
         { section_ref: 'sec-003', title: '第三章', summary: '第三章摘要。' },
       ],
       key_points: [],
+      claims: [],
       counterarguments: [],
       limitations: [],
       unresolved_questions: [],
@@ -436,6 +444,9 @@ function guidedEnglishFlowDetail(): ContentDetail {
       ],
     },
     guided_flow_available: true,
+    claims: null,
+    cognitive_delta: null,
+    retrieval_context_status: null,
   }
 }
 
