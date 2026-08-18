@@ -25,7 +25,7 @@
 ## 待确认草稿
 
 - [001 选择性阅读原文标记方案](./临时/001_选择性阅读原文标记方案.md)：选择性阅读需要在原文中标记推荐阅读与读总结即可的章节；章节级折叠 + 徽章呈现，标题锚点定位。执行状态：未开始。
-- [002 SignalLens 下一阶段升级方案](./临时/002_SignalLens下一阶段升级方案.md)：从真实评测、不可变内容证据和判断复盘开始，逐步演进到 Current User State、Cognitive Delta 与经用户确认的认知状态。执行状态：未开始。
+- [002 SignalLens 下一阶段升级方案：Memory V1 主线与 Prompt 自提升副线](./临时/002_SignalLens下一阶段升级方案.md)：优先建设带文章角色的 Claims、可追溯 Revision 的 Cognitive Memory、CREATE 前 Memory Match 与 Confirmation Event、面向更新识别的 obsolete 历史召回，以及“唯一主关系 + 多匹配证据”的 Cognitive Delta；通过默认折叠的关系与 Claim 角色纠错沉淀 Ground Truth，Prompt 自提升作为第二优化链路。执行状态：未开始。
 
 ## 文档维护规则
 
